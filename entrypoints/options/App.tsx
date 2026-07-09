@@ -12,53 +12,53 @@ import {
 
 type Tab = 'profiles' | 'templates' | 'api';
 
+const NAV: { id: Tab; label: string }[] = [
+  { id: 'profiles', label: 'Profiles' },
+  { id: 'templates', label: 'Templates' },
+  { id: 'api', label: 'API & Logging' },
+];
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('profiles');
+  const [tab, setTab] = useState<Tab>('profiles');
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center gap-4">
-        <h1 className="text-lg font-bold">
-          <span className="text-blue-600">Job</span>Fill — Settings
-        </h1>
+    <div className="min-h-screen bg-[#111] text-[#e8e8e8] font-sans">
+      {/* Top bar */}
+      <header className="border-b border-[#222] px-8 py-4 flex items-center justify-between">
+        <span className="font-semibold tracking-tight text-[#e8e8e8]">JobFill — Settings</span>
+        <span className="text-xs text-[#444]">v1.0</span>
       </header>
 
-      <div className="flex">
+      <div className="flex max-w-5xl mx-auto">
         {/* Sidebar */}
-        <nav className="w-48 bg-white border-r border-slate-200 min-h-screen pt-4 px-2">
-          {(['profiles', 'templates', 'api'] as Tab[]).map((tab) => (
+        <nav className="w-52 shrink-0 pt-8 px-4 flex flex-col gap-0.5">
+          {NAV.map(({ id, label }) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm mb-1 transition-colors ${
-                activeTab === tab
-                  ? 'bg-blue-50 text-blue-700 font-medium'
-                  : 'text-slate-600 hover:bg-slate-100'
+              key={id}
+              onClick={() => setTab(id)}
+              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-colors ${
+                tab === id
+                  ? 'bg-[#1e1e1e] text-[#e8e8e8] font-medium'
+                  : 'text-[#666] hover:text-[#aaa] hover:bg-[#191919]'
               }`}
             >
-              {TAB_LABELS[tab]}
+              {label}
             </button>
           ))}
         </nav>
 
         {/* Content */}
-        <main className="flex-1 p-6 max-w-2xl">
-          {activeTab === 'profiles' && <ProfilesTab />}
-          {activeTab === 'templates' && <TemplatesTab />}
-          {activeTab === 'api' && <ApiTab />}
+        <main className="flex-1 pt-8 px-8 pb-16 max-w-2xl">
+          {tab === 'profiles' && <ProfilesTab />}
+          {tab === 'templates' && <TemplatesTab />}
+          {tab === 'api' && <ApiTab />}
         </main>
       </div>
     </div>
   );
 }
 
-const TAB_LABELS: Record<Tab, string> = {
-  profiles: '👤 Profiles',
-  templates: '📄 Templates',
-  api: '🔑 API & Logging',
-};
-
-// ─── Profiles Tab ─────────────────────────────────────────────────────────────
+// ─── Profiles ─────────────────────────────────────────────────────────────────
 
 function ProfilesTab() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -66,10 +66,7 @@ function ProfilesTab() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    getProfiles().then((p) => {
-      setProfiles(p);
-      setSelected(p[0] ?? null);
-    });
+    getProfiles().then((p) => { setProfiles(p); setSelected(p[0] ?? null); });
   }, []);
 
   async function handleSave(profile: Profile) {
@@ -93,25 +90,20 @@ function ProfilesTab() {
 
   async function handleExport() {
     const json = await exportSyncData();
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
     a.download = 'jobfill-export.json';
     a.click();
-    URL.revokeObjectURL(url);
   }
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const text = await file.text();
-      await importSyncData(text);
+      await importSyncData(await file.text());
       const updated = await getProfiles();
       setProfiles(updated);
       setSelected(updated[0] ?? null);
-      alert('Profiles imported successfully.');
     } catch (err) {
       alert(`Import failed: ${(err as Error).message}`);
     }
@@ -119,38 +111,42 @@ function ProfilesTab() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-6">
+      {/* Section header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-slate-800">Profiles</h2>
-        <div className="flex gap-2">
+        <div>
+          <h2 className="font-semibold text-[#e8e8e8]">Profiles</h2>
+          <p className="text-xs text-[#555] mt-0.5">Your applicant profiles used for autofill</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={handleExport} className="btn-secondary">Export</button>
+          <label className="btn-secondary cursor-pointer">
+            Import
+            <input type="file" accept=".json" className="hidden" onChange={handleImport} />
+          </label>
           <button
             onClick={() => {
               const p = createEmptyProfile({ label: `Profile ${profiles.length + 1}` });
               setSelected(p);
             }}
-            className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-100"
+            className="btn-secondary text-[#e8e8e8] border-[#444]"
           >
             + New
           </button>
-          <button onClick={handleExport} className="btn-outline text-xs">Export</button>
-          <label className="btn-outline text-xs cursor-pointer">
-            Import
-            <input type="file" accept=".json" className="hidden" onChange={handleImport} />
-          </label>
         </div>
       </div>
 
-      {/* Profile list */}
+      {/* Profile tabs */}
       {profiles.length > 0 && (
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {profiles.map((p) => (
             <button
               key={p.id}
               onClick={() => setSelected(p)}
-              className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
+              className={`px-3 py-1 rounded-full text-xs border transition-colors ${
                 selected?.id === p.id
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'border-slate-200 text-slate-600 hover:border-blue-300'
+                  ? 'bg-[#e8e8e8] text-[#111] border-transparent font-medium'
+                  : 'border-[#333] text-[#666] hover:border-[#555] hover:text-[#aaa]'
               }`}
             >
               {p.label}
@@ -173,10 +169,7 @@ function ProfilesTab() {
 }
 
 function ProfileForm({
-  profile: initial,
-  onSave,
-  onDelete,
-  saved,
+  profile: initial, onSave, onDelete, saved,
 }: {
   profile: Profile;
   onSave: (p: Profile) => Promise<void>;
@@ -184,59 +177,56 @@ function ProfileForm({
   saved: boolean;
 }) {
   const [form, setForm] = useState(initial);
-
-  const set = (field: keyof Profile, value: string) =>
+  const set = (field: keyof Profile) => (value: string) =>
     setForm((f) => ({ ...f, [field]: value }));
 
   return (
     <form
-      className="bg-white rounded-xl border border-slate-200 p-5 space-y-4"
+      className="flex flex-col gap-5"
       onSubmit={(e) => { e.preventDefault(); onSave(form); }}
     >
       <div className="grid grid-cols-2 gap-4">
-        <Field label="Label" value={form.label} onChange={(v) => set('label', v)} required />
-        <Field label="First name" value={form.firstName} onChange={(v) => set('firstName', v)} />
-        <Field label="Last name" value={form.lastName} onChange={(v) => set('lastName', v)} />
-        <Field label="Email" type="email" value={form.email} onChange={(v) => set('email', v)} />
-        <Field label="Phone" type="tel" value={form.phone} onChange={(v) => set('phone', v)} placeholder="+420 777 000 000" />
-        <Field label="City" value={form.city} onChange={(v) => set('city', v)} />
-        <Field label="LinkedIn URL" value={form.linkedin} onChange={(v) => set('linkedin', v)} />
-        <Field label="GitHub URL" value={form.github} onChange={(v) => set('github', v)} />
-        <Field label="Portfolio / Website" value={form.website} onChange={(v) => set('website', v)} />
-        <Field label="Salary expectation" value={form.salaryExpectation} onChange={(v) => set('salaryExpectation', v)} placeholder="e.g. 80 000 CZK" />
-        <Field label="Availability / Notice" value={form.availability} onChange={(v) => set('availability', v)} placeholder="e.g. 2 weeks" />
-        <Field label="Work permit / Citizenship" value={form.workPermit} onChange={(v) => set('workPermit', v)} placeholder="e.g. EU citizen" />
+        <Field label="Profile label" value={form.label} onChange={set('label')} required />
+        <Field label="First name" value={form.firstName} onChange={set('firstName')} autoComplete="given-name" />
+        <Field label="Last name" value={form.lastName} onChange={set('lastName')} autoComplete="family-name" />
+        <Field label="Email" type="email" value={form.email} onChange={set('email')} autoComplete="email" />
+        <Field label="Phone" type="tel" value={form.phone} onChange={set('phone')} placeholder="+420 777 000 000" autoComplete="tel" />
+        <Field label="City" value={form.city} onChange={set('city')} />
+        <Field label="LinkedIn URL" value={form.linkedin} onChange={set('linkedin')} />
+        <Field label="GitHub URL" value={form.github} onChange={set('github')} />
+        <Field label="Portfolio / Website" value={form.website} onChange={set('website')} />
+        <Field label="Salary expectation" value={form.salaryExpectation} onChange={set('salaryExpectation')} placeholder="e.g. 80 000 CZK / month" />
+        <Field label="Availability / Notice" value={form.availability} onChange={set('availability')} placeholder="e.g. 2 weeks" />
+        <Field label="Work permit / Citizenship" value={form.workPermit} onChange={set('workPermit')} placeholder="e.g. EU citizen" />
       </div>
 
       <div>
         <label className="label">About / Summary</label>
         <textarea
           value={form.about}
-          onChange={(e) => set('about', e.target.value)}
+          onChange={(e) => setForm((f) => ({ ...f, about: e.target.value }))}
           rows={4}
-          className="input resize-none"
-          placeholder="Short professional bio used for AI-generated motivations"
+          className="input resize-none leading-relaxed"
+          placeholder="Used by AI when generating motivations and answering open questions"
         />
       </div>
 
-      <div className="flex items-center justify-between pt-2">
-        {onDelete && (
-          <button type="button" onClick={onDelete} className="text-xs text-red-500 hover:text-red-700">
+      <div className="flex items-center justify-between pt-1">
+        {onDelete ? (
+          <button type="button" onClick={onDelete} className="text-xs text-[#e05b5b] hover:text-[#f07070] transition-colors">
             Delete profile
           </button>
-        )}
-        <div className="flex items-center gap-3 ml-auto">
-          {saved && <span className="text-xs text-green-600">Saved ✓</span>}
-          <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
-            Save
-          </button>
+        ) : <span />}
+        <div className="flex items-center gap-3">
+          {saved && <span className="text-xs text-[#4a9]">Saved</span>}
+          <button type="submit" className="btn-primary max-w-[120px]">Save</button>
         </div>
       </div>
     </form>
   );
 }
 
-// ─── Templates Tab ────────────────────────────────────────────────────────────
+// ─── Templates ────────────────────────────────────────────────────────────────
 
 function TemplatesTab() {
   const [templates, setTemplates] = useState<CoverTemplate[]>([]);
@@ -244,10 +234,7 @@ function TemplatesTab() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    getCoverTemplates().then((t) => {
-      setTemplates(t);
-      setSelected(t[0] ?? null);
-    });
+    getCoverTemplates().then((t) => { setTemplates(t); setSelected(t[0] ?? null); });
   }, []);
 
   async function handleSave(tmpl: CoverTemplate) {
@@ -269,59 +256,73 @@ function TemplatesTab() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold">Cover Letter Templates</h2>
+        <div>
+          <h2 className="font-semibold text-[#e8e8e8]">Cover Letter Templates</h2>
+          <p className="text-xs text-[#555] mt-0.5">
+            Placeholders:{' '}
+            <code className="text-[#777] bg-[#1e1e1e] px-1 py-0.5 rounded text-[11px]">{'{company}'}</code>{' '}
+            <code className="text-[#777] bg-[#1e1e1e] px-1 py-0.5 rounded text-[11px]">{'{position}'}</code>{' '}
+            <code className="text-[#777] bg-[#1e1e1e] px-1 py-0.5 rounded text-[11px]">{'{source}'}</code>
+          </p>
+        </div>
         <button
           onClick={() => setSelected({ id: crypto.randomUUID(), label: 'New template', body: '' })}
-          className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-100"
+          className="btn-secondary text-[#e8e8e8] border-[#444]"
         >
           + New
         </button>
       </div>
-      <p className="text-xs text-slate-400">
-        Use placeholders: <code className="bg-slate-100 px-1 rounded">{'{company}'}</code>,{' '}
-        <code className="bg-slate-100 px-1 rounded">{'{position}'}</code>,{' '}
-        <code className="bg-slate-100 px-1 rounded">{'{source}'}</code>
-      </p>
 
-      <div className="flex gap-2 flex-wrap">
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setSelected(t)}
-            className={`rounded-full px-3 py-1 text-xs font-medium border ${
-              selected?.id === t.id ? 'bg-blue-600 text-white border-blue-600' : 'border-slate-200 text-slate-600'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {templates.length > 0 && (
+        <div className="flex gap-1.5 flex-wrap">
+          {templates.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setSelected(t)}
+              className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+                selected?.id === t.id
+                  ? 'bg-[#e8e8e8] text-[#111] border-transparent font-medium'
+                  : 'border-[#333] text-[#666] hover:border-[#555] hover:text-[#aaa]'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {selected && (
         <form
-          className="bg-white rounded-xl border border-slate-200 p-5 space-y-4"
+          className="flex flex-col gap-4"
           onSubmit={(e) => { e.preventDefault(); handleSave(selected); }}
         >
-          <Field label="Template name" value={selected.label} onChange={(v) => setSelected((t) => t ? { ...t, label: v } : t)} required />
+          <Field
+            label="Template name"
+            value={selected.label}
+            onChange={(v) => setSelected((t) => t ? { ...t, label: v } : t)}
+            required
+          />
           <div>
             <label className="label">Body</label>
             <textarea
               value={selected.body}
               onChange={(e) => setSelected((t) => t ? { ...t, body: e.target.value } : t)}
-              rows={8}
-              className="input resize-none"
-              placeholder="Dear {company} team, I am excited to apply for the {position} role…"
+              rows={10}
+              className="input resize-none leading-relaxed"
+              placeholder="Dear {company} hiring team,&#10;&#10;I'm excited to apply for the {position} role…"
             />
           </div>
-          <div className="flex justify-between items-center">
-            {templates.some((t) => t.id === selected.id) && (
-              <button type="button" onClick={() => handleDelete(selected.id)} className="text-xs text-red-500">Delete</button>
-            )}
-            <div className="flex items-center gap-3 ml-auto">
-              {saved && <span className="text-xs text-green-600">Saved ✓</span>}
-              <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Save</button>
+          <div className="flex items-center justify-between">
+            {templates.some((t) => t.id === selected.id) ? (
+              <button type="button" onClick={() => handleDelete(selected.id)} className="text-xs text-[#e05b5b] hover:text-[#f07070] transition-colors">
+                Delete
+              </button>
+            ) : <span />}
+            <div className="flex items-center gap-3">
+              {saved && <span className="text-xs text-[#4a9]">Saved</span>}
+              <button type="submit" className="btn-primary max-w-[120px]">Save</button>
             </div>
           </div>
         </form>
@@ -330,7 +331,7 @@ function TemplatesTab() {
   );
 }
 
-// ─── API & Logging Tab ────────────────────────────────────────────────────────
+// ─── API & Logging ────────────────────────────────────────────────────────────
 
 function ApiTab() {
   const [groqKey, setGroqKeyState] = useState('');
@@ -342,18 +343,15 @@ function ApiTab() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    Promise.all([
-      getGroqApiKey(), getGroqModel(),
-      getNotionCredentials(), getSheetsEndpoint(),
-      getSettings(),
-    ]).then(([key, model, notion, sheets, settings]) => {
-      if (key) setGroqKeyState(key);
-      setGroqModelState(model);
-      if (notion.notionToken) setNotionToken(notion.notionToken);
-      if (notion.notionDatabaseId) setNotionDb(notion.notionDatabaseId);
-      if (sheets) setSheetsUrl(sheets);
-      setLogBackend(settings.logBackend);
-    });
+    Promise.all([getGroqApiKey(), getGroqModel(), getNotionCredentials(), getSheetsEndpoint(), getSettings()])
+      .then(([key, model, notion, sheets, settings]) => {
+        if (key) setGroqKeyState(key);
+        setGroqModelState(model);
+        if (notion.notionToken) setNotionToken(notion.notionToken);
+        if (notion.notionDatabaseId) setNotionDb(notion.notionDatabaseId);
+        if (sheets) setSheetsUrl(sheets);
+        setLogBackend(settings.logBackend);
+      });
   }, []);
 
   async function handleSave(e: React.FormEvent) {
@@ -370,16 +368,20 @@ function ApiTab() {
   }
 
   return (
-    <form className="space-y-6" onSubmit={handleSave}>
-      <section className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-        <h3 className="font-semibold text-sm">AI (Groq)</h3>
+    <form className="flex flex-col gap-8" onSubmit={handleSave}>
+      {/* Groq */}
+      <section className="flex flex-col gap-4">
+        <div>
+          <h2 className="font-semibold text-[#e8e8e8]">AI — Groq</h2>
+          <p className="text-xs text-[#555] mt-0.5">Powers motivation generation and open question answering</p>
+        </div>
         <Field
           label="API Key"
           type="password"
           value={groqKey}
           onChange={setGroqKeyState}
           placeholder="gsk_…"
-          hint="Stored locally — never synced."
+          hint="Stored locally — never synced to other devices"
         />
         <Field
           label="Model"
@@ -389,11 +391,22 @@ function ApiTab() {
         />
       </section>
 
-      <section className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-        <h3 className="font-semibold text-sm">Application Log</h3>
+      <div className="divider" />
+
+      {/* Logging */}
+      <section className="flex flex-col gap-4">
+        <div>
+          <h2 className="font-semibold text-[#e8e8e8]">Application Log</h2>
+          <p className="text-xs text-[#555] mt-0.5">Log filled applications to Notion or Google Sheets</p>
+        </div>
+
         <div>
           <label className="label">Backend</label>
-          <select value={logBackend} onChange={(e) => setLogBackend(e.target.value as AppSettings['logBackend'])} className="input">
+          <select
+            value={logBackend}
+            onChange={(e) => setLogBackend(e.target.value as AppSettings['logBackend'])}
+            className="input"
+          >
             <option value="off">Off</option>
             <option value="notion">Notion</option>
             <option value="sheets">Google Sheets</option>
@@ -412,11 +425,9 @@ function ApiTab() {
         )}
       </section>
 
-      <div className="flex items-center gap-3">
-        {saved && <span className="text-sm text-green-600">Saved ✓</span>}
-        <button type="submit" className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700">
-          Save settings
-        </button>
+      <div className="flex items-center gap-4 pt-2">
+        <button type="submit" className="btn-primary max-w-[160px]">Save settings</button>
+        {saved && <span className="text-xs text-[#4a9]">Saved</span>}
       </div>
     </form>
   );
@@ -425,7 +436,7 @@ function ApiTab() {
 // ─── Reusable Field ───────────────────────────────────────────────────────────
 
 function Field({
-  label, value, onChange, type = 'text', placeholder, required, hint,
+  label, value, onChange, type = 'text', placeholder, required, hint, autoComplete,
 }: {
   label: string;
   value: string;
@@ -434,6 +445,7 @@ function Field({
   placeholder?: string;
   required?: boolean;
   hint?: string;
+  autoComplete?: string;
 }) {
   return (
     <div>
@@ -444,10 +456,10 @@ function Field({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         required={required}
+        autoComplete={autoComplete ?? 'off'}
         className="input"
-        autoComplete="off"
       />
-      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs text-[#555]">{hint}</p>}
     </div>
   );
 }
