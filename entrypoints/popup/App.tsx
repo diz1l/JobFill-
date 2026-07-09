@@ -5,6 +5,11 @@ import { getGroqApiKey, getApplicationLog } from '../../shared/storage/local';
 import type { ApplicationEntry } from '../../shared/types';
 import type { OpenQuestion } from '../../shared/messages';
 
+function openSettings() {
+  const url = chrome.runtime.getURL('options.html');
+  chrome.windows.create({ url, type: 'popup', width: 1280, height: 720, focused: true });
+}
+
 export default function App() {
   const [profiles, setProfiles] = useState<Array<{ id: string; label: string }>>([]);
   const [activeId, setActiveId] = useState('');
@@ -101,7 +106,7 @@ export default function App() {
       <div className="w-[380px] h-[214px] bg-[#1e1e1e] text-[#cccccc] flex flex-col items-center justify-center gap-4 text-center p-8">
         <span className="font-semibold text-[#e8e8e8]">JobFill</span>
         <p className="text-[13px] text-[#767676]">No profiles yet. Add one in settings to get started.</p>
-        <button onClick={() => chrome.runtime.openOptionsPage()} className="btn-primary w-full max-w-[200px]">
+        <button onClick={openSettings} className="btn-primary w-full max-w-[200px]">
           Open Settings
         </button>
       </div>
@@ -126,7 +131,7 @@ export default function App() {
             <span className="text-xs text-[#767676]">{profiles[0]?.label}</span>
           )}
           <button
-            onClick={() => chrome.runtime.openOptionsPage()}
+            onClick={openSettings}
             className="text-[#767676] hover:text-[#cccccc] transition-colors text-base leading-none"
             title="Settings"
           >⚙</button>
