@@ -15,6 +15,7 @@
         "/^node scripts/generate-icons\\.js$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "npx tsc": true
     }
 }

@@ -44,6 +44,7 @@ export function fillPage(profile: Profile, opts: FillOptions = {}): FillSummary 
     medium: 0,
     unrecognized: 0,
     fileInputs: 0,
+    aiQuestions: 0,
   };
 
   // Highlight file inputs separately (never fill)
@@ -61,6 +62,13 @@ export function fillPage(profile: Profile, opts: FillOptions = {}): FillSummary 
     if (!match || match.confidence === 'low' || match.confidence === 'none') {
       summary.unrecognized++;
       highlightField(el, 'none', durationMs);
+      continue;
+    }
+
+    // Open-ended question — skip fill, highlight as AI-needed
+    if (match.fieldType === 'openQuestion') {
+      summary.aiQuestions++;
+      highlightField(el, 'ai', durationMs);
       continue;
     }
 

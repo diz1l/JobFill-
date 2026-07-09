@@ -41,7 +41,7 @@ export const FIELD_RULES: FieldRule[] = [
   {
     type: 'fullName',
     autocomplete: ['name'],
-    pattern: /\bfull[.\s_-]?name\b|cel[eé][.\s_-]?jm[eé]no/i,
+    pattern: /\bfull[.\s_-]?name\b|\bname\b|cel[eé][.\s_-]?jm[eé]no/i,
   },
   {
     type: 'email',

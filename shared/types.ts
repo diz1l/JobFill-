@@ -81,6 +81,7 @@ export interface FillSummary {
   medium: number;
   unrecognized: number;
   fileInputs: number;
+  aiQuestions: number;  // open-ended fields that need AI
 }
 
 // ─── Job-info extraction ──────────────────────────────────────────────────────

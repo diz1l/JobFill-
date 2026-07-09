@@ -10,4 +10,4 @@ export {
 export type { FieldFingerprint, FillableElement } from './fingerprint';
 
 export { scoreField, HIGH_THRESHOLD, MEDIUM_THRESHOLD } from './scorer';
-export type { ScoredMatch } from './scorer';
+export type { ScoredMatch, ExtendedFieldType } from './scorer';

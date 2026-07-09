@@ -4,8 +4,6 @@ import { getProfiles, getActiveProfileId, setActiveProfileId } from '../../share
 import { getGroqApiKey, getApplicationLog } from '../../shared/storage/local';
 import type { ApplicationEntry } from '../../shared/types';
 
-// ─── Popup App ───────────────────────────────────────────────────────────────
-
 export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeId, setActiveId] = useState('');
@@ -20,23 +18,15 @@ export default function App() {
   const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
-    async function init() {
-      const [profs, aid, key, logs] = await Promise.all([
-        getProfiles(),
-        getActiveProfileId(),
-        getGroqApiKey(),
-        getApplicationLog(),
-      ]);
-      setProfiles(profs);
-      setActiveId(aid || profs[0]?.id || '');
-      setHasGroqKey(Boolean(key));
-      setRecentLogs(logs.slice(0, 10));
-    }
-    init();
-  }, []);
+    Promise.all([getProfiles(), getActiveProfileId(), getGroqApiKey(), getApplicationLog()]).then(
+      ([profs, aid, key, logs]) => {
+        setProfiles(profs);
+        setActiveId(aid || profs[0]?.id || '');
+        setHasGroqKey(Boolean(key));
+        setRecentLogs(logs.slice(0, 10));
+      },
+    );
 
-  // Extract job info from the active tab
-  useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
       if (!tab?.id) return;
@@ -47,13 +37,10 @@ export default function App() {
     });
   }, []);
 
-  const handleProfileChange = useCallback(
-    async (id: string) => {
-      setActiveId(id);
-      await setActiveProfileId(id);
-    },
-    [],
-  );
+  const handleProfileChange = useCallback(async (id: string) => {
+    setActiveId(id);
+    await setActiveProfileId(id);
+  }, []);
 
   const handleFill = useCallback(async () => {
     setFilling(true);
@@ -76,13 +63,10 @@ export default function App() {
       (resp) => {
         setFilling(false);
         if (chrome.runtime.lastError) {
-          setError('Could not connect to page. Try refreshing.');
+          setError('Could not connect to page. Refresh and try again.');
           return;
         }
-        if (resp?.error) {
-          setError(resp.error);
-          return;
-        }
+        if (resp?.error) { setError(resp.error); return; }
         if (resp?.summary) setSummary(resp.summary);
       },
     );
@@ -98,11 +82,8 @@ export default function App() {
       { type: 'GENERATE_COVER', jobInfo, profileId: activeId },
       (resp) => {
         setGenerating(false);
-        if (resp?.type === 'GENERATION_RESULT') {
-          setGeneratedText(resp.text);
-        } else if (resp?.type === 'API_ERROR') {
-          setError(resp.message);
-        }
+        if (resp?.type === 'GENERATION_RESULT') setGeneratedText(resp.text);
+        else if (resp?.type === 'API_ERROR') setError(resp.message);
       },
     );
   }, [jobInfo, activeId]);
@@ -111,12 +92,12 @@ export default function App() {
 
   if (profiles.length === 0) {
     return (
-      <div className="w-80 p-4 text-center">
+      <div className="w-[360px] p-5 flex flex-col items-center gap-3 text-center">
         <Logo />
-        <p className="mt-3 text-sm text-slate-600">No profiles found.</p>
+        <p className="text-sm text-slate-500 mt-1">No profiles yet. Set one up to get started.</p>
         <button
           onClick={() => chrome.runtime.openOptionsPage()}
-          className="mt-3 w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
         >
           Open Settings →
         </button>
@@ -125,37 +106,45 @@ export default function App() {
   }
 
   return (
-    <div className="w-80 bg-white text-slate-800 font-sans">
+    <div className="w-[360px] flex flex-col bg-white text-slate-800 font-sans text-sm">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
         <Logo />
+        {activeProfile && (
+          <span className="text-xs text-slate-400 max-w-[180px] truncate">{activeProfile.label}</span>
+        )}
         <button
           onClick={() => chrome.runtime.openOptionsPage()}
-          className="text-xs text-slate-400 hover:text-slate-600"
-          title="Open Settings"
+          className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors"
+          title="Settings"
+          aria-label="Open Settings"
         >
           ⚙
         </button>
-      </div>
+      </header>
 
-      <div className="p-4 space-y-3">
+      <div className="flex flex-col gap-3 p-4">
         {/* Job info banner */}
         {jobInfo && (jobInfo.company || jobInfo.position) && (
-          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-            {jobInfo.position && <span className="font-medium text-slate-700">{jobInfo.position}</span>}
-            {jobInfo.position && jobInfo.company && ' · '}
+          <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-500 leading-snug">
+            {jobInfo.position && (
+              <span className="font-semibold text-slate-700">{jobInfo.position}</span>
+            )}
+            {jobInfo.position && jobInfo.company && (
+              <span className="mx-1 text-slate-300">·</span>
+            )}
             {jobInfo.company && <span>{jobInfo.company}</span>}
           </div>
         )}
 
-        {/* Profile selector */}
+        {/* Profile selector (multiple profiles) */}
         {profiles.length > 1 && (
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Profile</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-slate-500">Profile</label>
             <select
               value={activeId}
               onChange={(e) => handleProfileChange(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>{p.label}</option>
@@ -164,83 +153,81 @@ export default function App() {
           </div>
         )}
 
-        {profiles.length === 1 && (
-          <div className="text-xs text-slate-500">
-            Profile: <span className="font-medium text-slate-700">{activeProfile?.label}</span>
-          </div>
-        )}
-
         {/* Fill button */}
         <button
           onClick={handleFill}
           disabled={filling || !activeId}
-          className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 active:scale-[.98] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
-          {filling ? 'Filling…' : '⚡ Fill Form'}
+          {filling ? (
+            <span className="flex items-center justify-center gap-2">
+              <Spinner /> Filling…
+            </span>
+          ) : (
+            '⚡ Fill Form'
+          )}
         </button>
 
         {/* Error */}
         {error && (
-          <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+          <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2.5 text-xs text-red-700 leading-snug">
             {error}
           </div>
         )}
 
         {/* Fill summary */}
-        {summary && <FillSummaryCard summary={summary} />}
+        {summary && <SummaryCard summary={summary} />}
 
         {/* AI generation */}
-        {hasGroqKey && jobInfo && (
-          <div className="space-y-2">
+        {hasGroqKey && (
+          <div className="flex flex-col gap-2 pt-0.5">
             <button
               onClick={handleGenerate}
-              disabled={generating}
-              className="w-full rounded-lg border border-violet-200 bg-violet-50 px-4 py-2 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-50 transition-colors"
+              disabled={generating || !jobInfo}
+              className="w-full rounded-xl border border-violet-200 bg-violet-50 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title={!jobInfo ? 'No job info detected on this page' : undefined}
             >
-              {generating ? 'Generating…' : '✨ Generate motivation'}
+              {generating ? '✨ Generating…' : '✨ Generate motivation'}
             </button>
             {generatedText && (
-              <div className="space-y-1.5">
+              <>
                 <textarea
                   value={generatedText}
                   onChange={(e) => setGeneratedText(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 p-2 text-xs text-slate-700 h-24 resize-none focus:outline-none focus:ring-2 focus:ring-violet-400"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-xs text-slate-700 h-28 resize-none focus:outline-none focus:ring-2 focus:ring-violet-400 leading-relaxed"
                 />
                 <button
                   onClick={() => {
                     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
                       if (tab?.id) {
-                        chrome.tabs.sendMessage(tab.id, {
-                          type: 'FILL_COVER_TEXT',
-                          text: generatedText,
-                        });
+                        chrome.tabs.sendMessage(tab.id, { type: 'FILL_COVER_TEXT', text: generatedText });
                       }
                     });
                   }}
-                  className="w-full rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700"
+                  className="w-full rounded-xl bg-violet-600 py-2 text-xs font-semibold text-white hover:bg-violet-700 transition-colors"
                 >
                   Insert into field
                 </button>
-              </div>
+              </>
             )}
           </div>
         )}
 
-        {/* Recent logs toggle */}
+        {/* Recent logs */}
         {recentLogs.length > 0 && (
-          <div>
+          <div className="border-t border-slate-100 pt-3">
             <button
               onClick={() => setShowLogs((v) => !v)}
-              className="flex w-full items-center justify-between text-xs text-slate-400 hover:text-slate-600"
+              className="flex w-full items-center justify-between text-xs text-slate-400 hover:text-slate-600 transition-colors"
             >
-              <span>Recent applications</span>
+              <span>Recent applications ({recentLogs.length})</span>
               <span>{showLogs ? '▲' : '▼'}</span>
             </button>
             {showLogs && (
-              <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+              <div className="mt-2 flex flex-col gap-1 max-h-36 overflow-y-auto">
                 {recentLogs.map((e) => (
-                  <div key={e.id} className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-xs">
-                    <span className="truncate max-w-[180px] text-slate-600">
+                  <div key={e.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs gap-2">
+                    <span className="truncate text-slate-600 min-w-0">
                       {e.position || e.company || e.url}
                     </span>
                     <SyncBadge status={e.remoteSync} />
@@ -259,47 +246,73 @@ export default function App() {
 
 function Logo() {
   return (
-    <span className="text-sm font-bold tracking-tight">
+    <span className="text-[15px] font-extrabold tracking-tight leading-none">
       <span className="text-blue-600">Job</span>
       <span className="text-slate-800">Fill</span>
     </span>
   );
 }
 
-function FillSummaryCard({ summary }: { summary: FillSummary }) {
+function Spinner() {
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-      <p className="text-xs font-medium text-slate-500 mb-2">Fill result</p>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <Stat label="Detected" value={summary.total} />
-        <Stat label="High confidence" value={summary.high} color="text-green-600" />
-        <Stat label="Review needed" value={summary.medium} color="text-yellow-600" />
-        <Stat label="Unrecognized" value={summary.unrecognized} color="text-slate-400" />
+    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  );
+}
+
+function SummaryCard({ summary }: { summary: FillSummary }) {
+  const total = summary.high + summary.medium;
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-600">Fill result</span>
+        <span className="text-xs text-slate-400">{summary.total} fields scanned</span>
+      </div>
+      <div className="flex gap-1.5 flex-wrap">
+        {total > 0 && (
+          <Pill color="green" label={`✓ ${summary.high} filled`} />
+        )}
+        {summary.medium > 0 && (
+          <Pill color="yellow" label={`⚠ ${summary.medium} review`} />
+        )}
+        {summary.unrecognized > 0 && (
+          <Pill color="gray" label={`○ ${summary.unrecognized} skipped`} />
+        )}
         {summary.fileInputs > 0 && (
-          <div className="col-span-2 mt-1 text-blue-600">
-            📎 {summary.fileInputs} file input{summary.fileInputs > 1 ? 's' : ''} — attach CV manually
-          </div>
+          <Pill color="blue" label={`📎 ${summary.fileInputs} attach manually`} />
+        )}
+        {summary.aiQuestions > 0 && (
+          <Pill color="violet" label={`✨ ${summary.aiQuestions} AI questions`} />
         )}
       </div>
     </div>
   );
 }
 
-function Stat({ label, value, color = 'text-slate-700' }: { label: string; value: number; color?: string }) {
+type PillColor = 'green' | 'yellow' | 'gray' | 'blue' | 'violet';
+const pillClasses: Record<PillColor, string> = {
+  green: 'bg-green-50 text-green-700 border-green-200',
+  yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+  gray: 'bg-slate-100 text-slate-500 border-slate-200',
+  blue: 'bg-blue-50 text-blue-700 border-blue-200',
+  violet: 'bg-violet-50 text-violet-700 border-violet-200',
+};
+function Pill({ color, label }: { color: PillColor; label: string }) {
   return (
-    <div className="flex justify-between">
-      <span className="text-slate-500">{label}</span>
-      <span className={`font-semibold ${color}`}>{value}</span>
-    </div>
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${pillClasses[color]}`}>
+      {label}
+    </span>
   );
 }
 
 function SyncBadge({ status }: { status: ApplicationEntry['remoteSync'] }) {
   const map = {
-    ok: { cls: 'text-green-600', label: 'synced' },
-    pending: { cls: 'text-yellow-600', label: 'pending' },
-    failed: { cls: 'text-red-500', label: 'failed' },
+    ok: 'text-green-600',
+    pending: 'text-yellow-600',
+    failed: 'text-red-500',
   };
-  const { cls, label } = map[status];
-  return <span className={`${cls} text-[10px]`}>{label}</span>;
+  return <span className={`shrink-0 text-[10px] font-medium ${map[status]}`}>{status}</span>;
 }
+

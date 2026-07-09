@@ -9,6 +9,8 @@ export interface FieldFingerprint {
   ariaLabel: string;
   labelText: string;
   contextHeading: string;
+  /** name/id stripped of framework prefixes and split by separators */
+  semanticName: string;
 }
 
 /** Strip diacritics and lowercase for cross-lingual matching */
@@ -17,6 +19,25 @@ export function normalize(text: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
+/**
+ * Extract a human-readable token from obfuscated name/id attributes.
+ * Examples:
+ *   "_systemfield_name"  → "name"
+ *   "job_application[first_name]" → "first name"
+ *   "firstName"  → "first name"
+ *   "field-email_address" → "email address"
+ */
+export function extractSemanticName(raw: string): string {
+  return raw
+    .replace(/\[[^\]]*\]/g, ' ')               // remove [bracket] notation
+    .replace(/^[_-]+/, '')                      // strip leading underscores
+    .replace(/^(systemfield|field|form|input|js|app|data|_)[_-]/gi, '') // common prefixes
+    .replace(/[_-]+/g, ' ')                     // separators → space
+    .replace(/([a-z])([A-Z])/g, '$1 $2')        // camelCase → words
+    .toLowerCase()
     .trim();
 }
 
@@ -70,15 +91,18 @@ function getContextHeading(el: HTMLElement): string {
 }
 
 export function buildFingerprint(el: FillableElement): FieldFingerprint {
+  const name = el.getAttribute('name') ?? '';
+  const id = el.getAttribute('id') ?? '';
   return {
     element: el,
     autocomplete: el.getAttribute('autocomplete') ?? '',
-    name: el.getAttribute('name') ?? '',
-    id: el.getAttribute('id') ?? '',
+    name,
+    id,
     placeholder: (el as HTMLInputElement).placeholder ?? '',
     ariaLabel: el.getAttribute('aria-label') ?? '',
     labelText: getLabelText(el),
     contextHeading: getContextHeading(el),
+    semanticName: extractSemanticName(name || id),
   };
 }
 

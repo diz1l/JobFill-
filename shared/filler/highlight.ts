@@ -22,6 +22,11 @@ const HIGHLIGHT_CSS = `
   outline: 2px dashed #3b82f6 !important;
   outline-offset: 1px !important;
 }
+.__jobfill-ai {
+  outline: 2px dashed #8b5cf6 !important;
+  outline-offset: 1px !important;
+  background-color: rgba(139,92,246,0.06) !important;
+}
 .__jobfill-badge {
   position: absolute;
   z-index: 2147483647;
@@ -47,7 +52,7 @@ function ensureStyles(): void {
 
 export function highlightField(
   el: HTMLElement,
-  confidence: FieldConfidence | 'file',
+  confidence: FieldConfidence | 'file' | 'ai',
   durationMs: number,
 ): void {
   ensureStyles();
@@ -67,7 +72,7 @@ function removeHighlight(el: HTMLElement, cls: string): void {
 
 export function removeAllHighlights(): void {
   document.querySelectorAll<HTMLElement>(`[${DISMISS_ATTR}]`).forEach((el) => {
-    ['high', 'medium', 'low', 'none', 'file'].forEach((c) =>
+    ['high', 'medium', 'low', 'none', 'file', 'ai'].forEach((c) =>
       el.classList.remove(`__jobfill-${c}`),
     );
     el.removeAttribute(DISMISS_ATTR);
