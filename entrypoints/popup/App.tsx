@@ -3,16 +3,19 @@ import type { Profile, FillSummary, JobInfo } from '../../shared/types';
 import { getProfiles, getActiveProfileId, setActiveProfileId } from '../../shared/storage/sync';
 import { getGroqApiKey, getApplicationLog } from '../../shared/storage/local';
 import type { ApplicationEntry } from '../../shared/types';
+import type { OpenQuestion } from '../../shared/messages';
 
 export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeId, setActiveId] = useState('');
   const [filling, setFilling] = useState(false);
   const [summary, setSummary] = useState<FillSummary | null>(null);
+  const [openQuestions, setOpenQuestions] = useState<OpenQuestion[]>([]);
   const [jobInfo, setJobInfo] = useState<JobInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generatedText, setGeneratedText] = useState('');
+  const [answeringQuestions, setAnsweringQuestions] = useState(false);
   const [hasGroqKey, setHasGroqKey] = useState(false);
   const [recentLogs, setRecentLogs] = useState<ApplicationEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
@@ -45,6 +48,7 @@ export default function App() {
   const handleFill = useCallback(async () => {
     setFilling(true);
     setSummary(null);
+    setOpenQuestions([]);
     setError(null);
 
     const [tab] = await new Promise<chrome.tabs.Tab[]>((res) =>
@@ -68,18 +72,50 @@ export default function App() {
         }
         if (resp?.error) { setError(resp.error); return; }
         if (resp?.summary) setSummary(resp.summary);
+        if (resp?.openQuestions?.length) setOpenQuestions(resp.openQuestions);
       },
     );
   }, [activeId]);
 
+  const handleAnswerQuestions = useCallback(async () => {
+    if (!openQuestions.length || !hasGroqKey) return;
+    setAnsweringQuestions(true);
+    setError(null);
+
+    chrome.runtime.sendMessage(
+      {
+        type: 'ANSWER_QUESTIONS',
+        questions: openQuestions,
+        profileId: activeId,
+        jobInfo: jobInfo ?? {},
+      },
+      async (resp) => {
+        if (resp?.type === 'ANSWERS_RESULT') {
+          const [tab] = await new Promise<chrome.tabs.Tab[]>((res) =>
+            chrome.tabs.query({ active: true, currentWindow: true }, res),
+          );
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, { type: 'FILL_ANSWERS', answers: resp.answers }, () => {
+              setAnsweringQuestions(false);
+              setOpenQuestions([]);
+              setSummary((s) => s ? { ...s, aiQuestions: 0 } : s);
+            });
+          }
+        } else {
+          setAnsweringQuestions(false);
+          if (resp?.type === 'API_ERROR') setError(resp.message);
+        }
+      },
+    );
+  }, [openQuestions, hasGroqKey, activeId, jobInfo]);
+
   const handleGenerate = useCallback(async () => {
-    if (!jobInfo) return;
     setGenerating(true);
     setGeneratedText('');
     setError(null);
 
     chrome.runtime.sendMessage(
-      { type: 'GENERATE_COVER', jobInfo, profileId: activeId },
+      { type: 'GENERATE_COVER', jobInfo: jobInfo ?? {}, profileId: activeId },
       (resp) => {
         setGenerating(false);
         if (resp?.type === 'GENERATION_RESULT') setGeneratedText(resp.text);
@@ -178,14 +214,26 @@ export default function App() {
         {/* Fill summary */}
         {summary && <SummaryCard summary={summary} />}
 
+        {/* Answer open questions with Groq */}
+        {hasGroqKey && openQuestions.length > 0 && (
+          <button
+            onClick={handleAnswerQuestions}
+            disabled={answeringQuestions}
+            className="w-full rounded-xl border border-violet-300 bg-violet-50 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {answeringQuestions
+              ? <span className="flex items-center justify-center gap-2"><Spinner /> Answering…</span>
+              : `✨ Answer ${openQuestions.length} open question${openQuestions.length > 1 ? 's' : ''} with AI`}
+          </button>
+        )}
+
         {/* AI generation */}
         {hasGroqKey && (
           <div className="flex flex-col gap-2 pt-0.5">
             <button
               onClick={handleGenerate}
-              disabled={generating || !jobInfo}
+              disabled={generating}
               className="w-full rounded-xl border border-violet-200 bg-violet-50 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              title={!jobInfo ? 'No job info detected on this page' : undefined}
             >
               {generating ? '✨ Generating…' : '✨ Generate motivation'}
             </button>

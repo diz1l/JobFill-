@@ -157,3 +157,78 @@ function detectLanguage(text?: string): string {
   const czechIndicators = /[áčďéěíňóřšťúůžÁČĎÉĚÍŇÓŘŠŤÚŮŽ]/;
   return czechIndicators.test(text) ? 'Czech' : 'English';
 }
+
+/**
+ * Generate answers to open-ended job application questions (FR-5.2 extension).
+ * Returns an array of answer strings aligned with the input questions array.
+ */
+export async function answerOpenQuestions(
+  questions: string[],
+  profile: Profile,
+  jobInfo: JobInfo,
+  apiKey: string,
+  model: string,
+): Promise<string[]> {
+  if (!apiKey) throw new GroqApiError('MISSING_KEY', 'Groq API key is not configured.');
+  if (questions.length === 0) return [];
+
+  const language = detectLanguage(jobInfo.description ?? questions.join(' '));
+
+  const systemPrompt = `You are a job application assistant. Answer each application question concisely and professionally in ${language}.
+Respond ONLY with a JSON array of strings — one answer per question, in the same order.
+Each answer should be 1–3 sentences. Tailor each answer to the applicant's experience and the role.`;
+
+  const userPrompt = `Role: ${jobInfo.position ?? 'Software Engineer'}
+Company: ${jobInfo.company ?? 'the company'}
+Applicant profile: ${profile.about || `${profile.firstName} ${profile.lastName}`}
+
+Questions:
+${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}
+
+Respond with a JSON array: ["answer to q1", "answer to q2", ...]`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        max_tokens: 800,
+        temperature: 0.6,
+        response_format: { type: 'json_object' },
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') throw new GroqApiError('TIMEOUT', 'Request timed out.');
+    throw new GroqApiError('NETWORK_ERROR', `Network error: ${(err as Error).message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (response.status === 401) throw new GroqApiError('UNAUTHORIZED', 'Invalid Groq API key.');
+  if (response.status === 429) throw new GroqApiError('RATE_LIMITED', 'Groq rate limit exceeded.');
+  if (!response.ok) throw new GroqApiError('NETWORK_ERROR', `Groq API error: HTTP ${response.status}`);
+
+  const data = (await response.json()) as GroqResponse;
+  const raw = data.choices[0]?.message.content ?? '[]';
+
+  try {
+    // Groq json_object mode wraps arrays — handle both {"answers": [...]} and [...]
+    const parsed = JSON.parse(raw);
+    const arr: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : (parsed.answers ?? parsed.responses ?? Object.values(parsed));
+    return questions.map((_, i) => (typeof arr[i] === 'string' ? (arr[i] as string) : ''));
+  } catch {
+    return questions.map(() => '');
+  }
+}

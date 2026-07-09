@@ -6,7 +6,7 @@ import { fillSelect } from './selectStrategy';
 import { highlightField } from './highlight';
 
 /** Map a matched field type to the corresponding profile value */
-function resolveValue(fieldType: string, profile: Profile): string {
+function resolveValue(fieldType: string, profile: Profile, coverLetterText: string): string {
   const map: Record<string, string> = {
     firstName: profile.firstName,
     lastName: profile.lastName,
@@ -18,7 +18,7 @@ function resolveValue(fieldType: string, profile: Profile): string {
     website: profile.website,
     salary: profile.salaryExpectation,
     city: profile.city,
-    coverLetter: '', // populated by template resolver
+    coverLetter: coverLetterText,
     availability: profile.availability,
     workPermit: profile.workPermit,
     about: profile.about,
@@ -28,6 +28,8 @@ function resolveValue(fieldType: string, profile: Profile): string {
 
 export interface FillOptions {
   highlightDurationMs?: number;
+  /** Pre-resolved cover letter text (placeholders already substituted) */
+  coverLetterText?: string;
 }
 
 /**
@@ -36,6 +38,7 @@ export interface FillOptions {
  */
 export function fillPage(profile: Profile, opts: FillOptions = {}): FillSummary {
   const durationMs = opts.highlightDurationMs ?? 3000;
+  const coverLetterText = opts.coverLetterText ?? '';
   const elements = enumerateFillable();
 
   const summary: FillSummary = {
@@ -72,7 +75,7 @@ export function fillPage(profile: Profile, opts: FillOptions = {}): FillSummary 
       continue;
     }
 
-    const value = resolveValue(match.fieldType, profile);
+    const value = resolveValue(match.fieldType, profile, coverLetterText);
 
     if (!value) {
       // Field type recognized but profile value is empty — skip silently

@@ -4,18 +4,26 @@ import type { FillSummary, JobInfo, ApplicationEntry } from './types';
 
 export type PopupToContentMessage =
   | { type: 'FILL_FORM'; profileId: string }
-  | { type: 'EXTRACT_JOB_INFO' };
+  | { type: 'EXTRACT_JOB_INFO' }
+  | { type: 'FILL_COVER_TEXT'; text: string }
+  | { type: 'FILL_ANSWERS'; answers: Record<string, string> };
 
 // ─── Content → Popup ──────────────────────────────────────────────────────────
 
+export interface OpenQuestion {
+  id: string;
+  text: string;
+}
+
 export type ContentToPopupMessage =
-  | { type: 'FILL_RESULT'; summary: FillSummary }
+  | { type: 'FILL_RESULT'; summary: FillSummary; openQuestions: OpenQuestion[] }
   | { type: 'JOB_INFO'; jobInfo: JobInfo };
 
 // ─── Any → Background ────────────────────────────────────────────────────────
 
 export type ToBackgroundMessage =
   | { type: 'GENERATE_COVER'; jobInfo: JobInfo; profileId: string }
+  | { type: 'ANSWER_QUESTIONS'; questions: OpenQuestion[]; profileId: string; jobInfo: JobInfo }
   | { type: 'CLASSIFY_FIELDS'; fingerprints: string[] }
   | { type: 'LOG_APPLICATION'; entry: ApplicationEntry };
 
@@ -30,6 +38,7 @@ export type ApiErrorKind =
 
 export type FromBackgroundMessage =
   | { type: 'GENERATION_RESULT'; text: string }
+  | { type: 'ANSWERS_RESULT'; answers: Record<string, string> }
   | { type: 'LOG_RESULT'; success: boolean }
   | { type: 'API_ERROR'; kind: ApiErrorKind; message: string };
 

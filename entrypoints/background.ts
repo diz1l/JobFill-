@@ -1,17 +1,24 @@
 import { defineBackground } from 'wxt/utils/define-background';
-import { generateMotivation, classifyFields, GroqApiError } from '../shared/api/groq';
+import { generateMotivation, classifyFields, answerOpenQuestions, GroqApiError } from '../shared/api/groq';
 import { logToNotion } from '../shared/api/notion';
 import { logToSheets } from '../shared/api/sheets';
 import { getGroqApiKey, getGroqModel, getNotionCredentials, getSheetsEndpoint, appendLogEntry, updateLogEntrySync } from '../shared/storage/local';
 import { getSettings, getProfiles } from '../shared/storage/sync';
-import type { ToBackgroundMessage, ApiErrorKind } from '../shared/messages';
-import type { ApplicationEntry } from '../shared/types';
+import type { ToBackgroundMessage, ApiErrorKind, OpenQuestion } from '../shared/messages';
+import type { ApplicationEntry, JobInfo } from '../shared/types';
 
 export default defineBackground(() => {
   chrome.runtime.onMessage.addListener(
     (message: ToBackgroundMessage, _sender, sendResponse) => {
       if (message.type === 'GENERATE_COVER') {
         handleGenerateCover(message.jobInfo, message.profileId)
+          .then(sendResponse)
+          .catch(() => sendResponse({ type: 'API_ERROR', kind: 'NETWORK_ERROR', message: 'Unknown error.' }));
+        return true;
+      }
+
+      if (message.type === 'ANSWER_QUESTIONS') {
+        handleAnswerQuestions(message.questions, message.profileId, message.jobInfo)
           .then(sendResponse)
           .catch(() => sendResponse({ type: 'API_ERROR', kind: 'NETWORK_ERROR', message: 'Unknown error.' }));
         return true;
@@ -36,10 +43,7 @@ export default defineBackground(() => {
   );
 });
 
-async function handleGenerateCover(
-  jobInfo: Parameters<typeof generateMotivation>[1] extends infer _P ? Parameters<typeof generateMotivation>[0] : never,
-  profileId: string,
-) {
+async function handleGenerateCover(jobInfo: JobInfo, profileId: string) {
   const apiKey = await getGroqApiKey();
   const model = await getGroqModel();
 
@@ -106,5 +110,41 @@ async function handleLogApplication(entry: ApplicationEntry) {
     await updateLogEntrySync(entry.id, 'failed');
     // Surface non-blockingly — caller shows warning
     return { type: 'LOG_RESULT', success: false };
+  }
+}
+
+async function handleAnswerQuestions(
+  questions: OpenQuestion[],
+  profileId: string,
+  jobInfo: JobInfo,
+) {
+  const apiKey = await getGroqApiKey();
+  const model = await getGroqModel();
+
+  if (!apiKey) {
+    return { type: 'API_ERROR', kind: 'MISSING_KEY' as ApiErrorKind, message: 'No Groq API key.' };
+  }
+
+  const profiles = await getProfiles();
+  const profile = profiles.find((p) => p.id === profileId);
+  if (!profile) {
+    return { type: 'API_ERROR', kind: 'NETWORK_ERROR' as ApiErrorKind, message: 'Profile not found.' };
+  }
+
+  try {
+    const questionTexts = questions.map((q) => q.text);
+    const answerTexts = await answerOpenQuestions(questionTexts, profile, jobInfo, apiKey, model);
+
+    const answers: Record<string, string> = {};
+    questions.forEach((q, i) => {
+      answers[q.id] = answerTexts[i] ?? '';
+    });
+
+    return { type: 'ANSWERS_RESULT', answers };
+  } catch (err) {
+    if (err instanceof GroqApiError) {
+      return { type: 'API_ERROR', kind: err.kind, message: err.message };
+    }
+    return { type: 'API_ERROR', kind: 'NETWORK_ERROR' as ApiErrorKind, message: String(err) };
   }
 }

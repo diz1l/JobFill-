@@ -16,6 +16,9 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "npx tsc": true
+        "npx tsc": true,
+        "git add": true,
+        "git commit": true,
+        "git push": true
     }
 }
