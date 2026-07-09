@@ -111,22 +111,22 @@ function ProfilesTab() {
   return (
     <div className="max-w-3xl">
       {/* Section header */}
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
+      <div className="mb-5">
+        <div className="flex items-center justify-between gap-3 mb-1.5">
           <p className="section-title">Profiles</p>
-          <p className="section-desc">Applicant profiles used for autofill. Add fields for better detection coverage.</p>
+          <div className="flex items-center gap-2">
+            <button onClick={handleExport} className="btn-secondary">Export</button>
+            <label className="btn-secondary cursor-pointer">
+              Import
+              <input type="file" accept=".json" className="hidden" onChange={handleImport} />
+            </label>
+            <button
+              onClick={() => setSelected(createEmptyProfile({ label: `Profile ${profiles.length + 1}` }))}
+              className="btn-secondary"
+            >+ New</button>
+          </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button onClick={handleExport} className="btn-secondary">Export</button>
-          <label className="btn-secondary cursor-pointer">
-            Import
-            <input type="file" accept=".json" className="hidden" onChange={handleImport} />
-          </label>
-          <button
-            onClick={() => setSelected(createEmptyProfile({ label: `Profile ${profiles.length + 1}` }))}
-            className="btn-secondary"
-          >+ New</button>
-        </div>
+        <p className="section-desc">Applicant profiles used for autofill. Add fields for better detection coverage.</p>
       </div>
 
       {/* Profile switcher pills */}
@@ -246,20 +246,20 @@ function TemplatesTab() {
 
   return (
     <div className="max-w-3xl">
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
+      <div className="mb-5">
+        <div className="flex items-center justify-between gap-3 mb-1.5">
           <p className="section-title">Cover Letter Templates</p>
-          <p className="section-desc">
-            Placeholders auto-resolved at fill time:{' '}
-            <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{company}'}</code>{' '}
-            <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{position}'}</code>{' '}
-            <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{source}'}</code>
-          </p>
+          <button
+            onClick={() => setSelected({ id: crypto.randomUUID(), label: 'New template', body: '' })}
+            className="btn-secondary"
+          >+ New</button>
         </div>
-        <button
-          onClick={() => setSelected({ id: crypto.randomUUID(), label: 'New template', body: '' })}
-          className="btn-secondary shrink-0"
-        >+ New</button>
+        <p className="section-desc">
+          Placeholders auto-resolved at fill time:{' '}
+          <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{company}'}</code>{' '}
+          <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{position}'}</code>{' '}
+          <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{source}'}</code>
+        </p>
       </div>
 
       {templates.length > 0 && (
