@@ -11,7 +11,6 @@ import {
 } from '../../shared/storage/local';
 
 type Tab = 'profiles' | 'templates' | 'api';
-
 const NAV: { id: Tab; label: string }[] = [
   { id: 'profiles', label: 'Profiles' },
   { id: 'templates', label: 'Templates' },
@@ -22,33 +21,41 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('profiles');
 
   return (
-    <div className="min-h-screen bg-[#111] text-[#e8e8e8] font-sans">
-      {/* Top bar */}
-      <header className="border-b border-[#222] px-8 py-4 flex items-center justify-between">
-        <span className="font-semibold tracking-tight text-[#e8e8e8]">JobFill — Settings</span>
-        <span className="text-xs text-[#444]">v1.0</span>
+    <div className="min-h-screen bg-[#1e1e1e] text-[#cccccc] font-sans flex flex-col">
+      {/* Header */}
+      <header className="bg-[#252526] border-b border-[#3e3e42] px-6 py-3 flex items-center justify-between shrink-0">
+        <span className="font-semibold text-[#e8e8e8] tracking-tight">JobFill</span>
+        <a
+          href="https://www.instagram.com/dias_nur420/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-[#767676] hover:text-[#aaa] transition-colors"
+        >
+          @dias_nur420
+        </a>
       </header>
 
-      <div className="flex max-w-5xl mx-auto">
+      {/* Body */}
+      <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <nav className="w-52 shrink-0 pt-8 px-4 flex flex-col gap-0.5">
+        <aside className="w-44 shrink-0 bg-[#252526] border-r border-[#3e3e42] pt-5 px-2 flex flex-col gap-0.5">
           {NAV.map(({ id, label }) => (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-colors ${
+              className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
                 tab === id
-                  ? 'bg-[#1e1e1e] text-[#e8e8e8] font-medium'
-                  : 'text-[#666] hover:text-[#aaa] hover:bg-[#191919]'
+                  ? 'bg-[#37373d] text-[#e8e8e8]'
+                  : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#2d2d2d]'
               }`}
             >
               {label}
             </button>
           ))}
-        </nav>
+        </aside>
 
-        {/* Content */}
-        <main className="flex-1 pt-8 px-8 pb-16 max-w-2xl">
+        {/* Main content — fills the rest of the page width */}
+        <main className="flex-1 overflow-y-auto p-8">
           {tab === 'profiles' && <ProfilesTab />}
           {tab === 'templates' && <TemplatesTab />}
           {tab === 'api' && <ApiTab />}
@@ -73,18 +80,15 @@ function ProfilesTab() {
     const next = profiles.some((p) => p.id === profile.id)
       ? profiles.map((p) => (p.id === profile.id ? profile : p))
       : [...profiles, profile];
-    setProfiles(next);
-    setSelected(profile);
+    setProfiles(next); setSelected(profile);
     await saveProfiles(next);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
 
   async function handleDelete(id: string) {
     if (!confirm('Delete this profile?')) return;
     const next = profiles.filter((p) => p.id !== id);
-    setProfiles(next);
-    setSelected(next[0] ?? null);
+    setProfiles(next); setSelected(next[0] ?? null);
     await saveProfiles(next);
   }
 
@@ -92,61 +96,50 @@ function ProfilesTab() {
     const json = await exportSyncData();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-    a.download = 'jobfill-export.json';
-    a.click();
+    a.download = 'jobfill-export.json'; a.click();
   }
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const file = e.target.files?.[0]; if (!file) return;
     try {
       await importSyncData(await file.text());
-      const updated = await getProfiles();
-      setProfiles(updated);
-      setSelected(updated[0] ?? null);
-    } catch (err) {
-      alert(`Import failed: ${(err as Error).message}`);
-    }
+      const u = await getProfiles(); setProfiles(u); setSelected(u[0] ?? null);
+    } catch (err) { alert(`Import failed: ${(err as Error).message}`); }
     e.target.value = '';
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="max-w-3xl">
       {/* Section header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4 mb-6">
         <div>
-          <h2 className="font-semibold text-[#e8e8e8]">Profiles</h2>
-          <p className="text-xs text-[#555] mt-0.5">Your applicant profiles used for autofill</p>
+          <p className="section-title">Profiles</p>
+          <p className="section-desc">Applicant profiles used for autofill. Add fields for better detection coverage.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button onClick={handleExport} className="btn-secondary">Export</button>
           <label className="btn-secondary cursor-pointer">
             Import
             <input type="file" accept=".json" className="hidden" onChange={handleImport} />
           </label>
           <button
-            onClick={() => {
-              const p = createEmptyProfile({ label: `Profile ${profiles.length + 1}` });
-              setSelected(p);
-            }}
-            className="btn-secondary text-[#e8e8e8] border-[#444]"
-          >
-            + New
-          </button>
+            onClick={() => setSelected(createEmptyProfile({ label: `Profile ${profiles.length + 1}` }))}
+            className="btn-secondary"
+          >+ New</button>
         </div>
       </div>
 
-      {/* Profile tabs */}
+      {/* Profile switcher pills */}
       {profiles.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex flex-wrap gap-2 mb-6">
           {profiles.map((p) => (
             <button
               key={p.id}
               onClick={() => setSelected(p)}
-              className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+              className={`px-3.5 py-1.5 rounded-full text-[13px] border transition-colors ${
                 selected?.id === p.id
-                  ? 'bg-[#e8e8e8] text-[#111] border-transparent font-medium'
-                  : 'border-[#333] text-[#666] hover:border-[#555] hover:text-[#aaa]'
+                  ? 'border-[#0e639c] bg-[#0e639c] text-white'
+                  : 'border-[#505050] text-[#858585] hover:border-[#777] hover:text-[#cccccc]'
               }`}
             >
               {p.label}
@@ -177,49 +170,48 @@ function ProfileForm({
   saved: boolean;
 }) {
   const [form, setForm] = useState(initial);
-  const set = (field: keyof Profile) => (value: string) =>
-    setForm((f) => ({ ...f, [field]: value }));
+  const f = (field: keyof Profile) => (value: string) => setForm((x) => ({ ...x, [field]: value }));
 
   return (
-    <form
-      className="flex flex-col gap-5"
-      onSubmit={(e) => { e.preventDefault(); onSave(form); }}
-    >
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="Profile label" value={form.label} onChange={set('label')} required />
-        <Field label="First name" value={form.firstName} onChange={set('firstName')} autoComplete="given-name" />
-        <Field label="Last name" value={form.lastName} onChange={set('lastName')} autoComplete="family-name" />
-        <Field label="Email" type="email" value={form.email} onChange={set('email')} autoComplete="email" />
-        <Field label="Phone" type="tel" value={form.phone} onChange={set('phone')} placeholder="+420 777 000 000" autoComplete="tel" />
-        <Field label="City" value={form.city} onChange={set('city')} />
-        <Field label="LinkedIn URL" value={form.linkedin} onChange={set('linkedin')} />
-        <Field label="GitHub URL" value={form.github} onChange={set('github')} />
-        <Field label="Portfolio / Website" value={form.website} onChange={set('website')} />
-        <Field label="Salary expectation" value={form.salaryExpectation} onChange={set('salaryExpectation')} placeholder="e.g. 80 000 CZK / month" />
-        <Field label="Availability / Notice" value={form.availability} onChange={set('availability')} placeholder="e.g. 2 weeks" />
-        <Field label="Work permit / Citizenship" value={form.workPermit} onChange={set('workPermit')} placeholder="e.g. EU citizen" />
+    <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="flex flex-col gap-5">
+      {/* Row 1: label (full width) */}
+      <Field label="Profile label" value={form.label} onChange={f('label')} required />
+
+      {/* Row 2+: 2-col grid */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+        <Field label="First name"           value={form.firstName}         onChange={f('firstName')}         autoComplete="given-name" />
+        <Field label="Last name"            value={form.lastName}          onChange={f('lastName')}          autoComplete="family-name" />
+        <Field label="Email"  type="email"  value={form.email}             onChange={f('email')}             autoComplete="email" />
+        <Field label="Phone"  type="tel"    value={form.phone}             onChange={f('phone')}             placeholder="+420 777 000 000" autoComplete="tel" />
+        <Field label="City"                 value={form.city}              onChange={f('city')} />
+        <Field label="Salary expectation"  value={form.salaryExpectation} onChange={f('salaryExpectation')} placeholder="e.g. 80 000 CZK / month" />
+        <Field label="LinkedIn URL"         value={form.linkedin}          onChange={f('linkedin')} />
+        <Field label="GitHub URL"           value={form.github}            onChange={f('github')} />
+        <Field label="Portfolio / Website" value={form.website}           onChange={f('website')} />
+        <Field label="Availability / Notice" value={form.availability}    onChange={f('availability')}      placeholder="e.g. 2 weeks" />
+        <Field label="Work permit / Citizenship" value={form.workPermit}  onChange={f('workPermit')}        placeholder="e.g. EU citizen" />
       </div>
 
       <div>
         <label className="label">About / Summary</label>
         <textarea
           value={form.about}
-          onChange={(e) => setForm((f) => ({ ...f, about: e.target.value }))}
-          rows={4}
-          className="input resize-none leading-relaxed"
-          placeholder="Used by AI when generating motivations and answering open questions"
+          onChange={(e) => setForm((x) => ({ ...x, about: e.target.value }))}
+          rows={5}
+          className="input resize-y leading-relaxed"
+          placeholder="Used by AI for motivation generation and answering open-ended application questions"
         />
       </div>
 
-      <div className="flex items-center justify-between pt-1">
+      <div className="flex items-center justify-between pt-1 border-t border-[#3e3e42]">
         {onDelete ? (
-          <button type="button" onClick={onDelete} className="text-xs text-[#e05b5b] hover:text-[#f07070] transition-colors">
+          <button type="button" onClick={onDelete} className="text-[13px] text-[#cc6666] hover:text-[#e07070] transition-colors">
             Delete profile
           </button>
         ) : <span />}
         <div className="flex items-center gap-3">
-          {saved && <span className="text-xs text-[#4a9]">Saved</span>}
-          <button type="submit" className="btn-primary max-w-[120px]">Save</button>
+          {saved && <span className="text-[13px] text-[#4ec9b0]">Saved</span>}
+          <button type="submit" className="btn-primary">Save changes</button>
         </div>
       </div>
     </form>
@@ -241,50 +233,45 @@ function TemplatesTab() {
     const next = templates.some((t) => t.id === tmpl.id)
       ? templates.map((t) => (t.id === tmpl.id ? tmpl : t))
       : [...templates, tmpl];
-    setTemplates(next);
-    setSelected(tmpl);
+    setTemplates(next); setSelected(tmpl);
     await saveCoverTemplates(next);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
 
   async function handleDelete(id: string) {
     const next = templates.filter((t) => t.id !== id);
-    setTemplates(next);
-    setSelected(next[0] ?? null);
+    setTemplates(next); setSelected(next[0] ?? null);
     await saveCoverTemplates(next);
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+    <div className="max-w-3xl">
+      <div className="flex items-start justify-between gap-4 mb-6">
         <div>
-          <h2 className="font-semibold text-[#e8e8e8]">Cover Letter Templates</h2>
-          <p className="text-xs text-[#555] mt-0.5">
-            Placeholders:{' '}
-            <code className="text-[#777] bg-[#1e1e1e] px-1 py-0.5 rounded text-[11px]">{'{company}'}</code>{' '}
-            <code className="text-[#777] bg-[#1e1e1e] px-1 py-0.5 rounded text-[11px]">{'{position}'}</code>{' '}
-            <code className="text-[#777] bg-[#1e1e1e] px-1 py-0.5 rounded text-[11px]">{'{source}'}</code>
+          <p className="section-title">Cover Letter Templates</p>
+          <p className="section-desc">
+            Placeholders auto-resolved at fill time:{' '}
+            <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{company}'}</code>{' '}
+            <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{position}'}</code>{' '}
+            <code className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[#ce9178] text-[12px]">{'{source}'}</code>
           </p>
         </div>
         <button
           onClick={() => setSelected({ id: crypto.randomUUID(), label: 'New template', body: '' })}
-          className="btn-secondary text-[#e8e8e8] border-[#444]"
-        >
-          + New
-        </button>
+          className="btn-secondary shrink-0"
+        >+ New</button>
       </div>
 
       {templates.length > 0 && (
-        <div className="flex gap-1.5 flex-wrap">
+        <div className="flex flex-wrap gap-2 mb-6">
           {templates.map((t) => (
             <button
               key={t.id}
               onClick={() => setSelected(t)}
-              className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+              className={`px-3.5 py-1.5 rounded-full text-[13px] border transition-colors ${
                 selected?.id === t.id
-                  ? 'bg-[#e8e8e8] text-[#111] border-transparent font-medium'
-                  : 'border-[#333] text-[#666] hover:border-[#555] hover:text-[#aaa]'
+                  ? 'border-[#0e639c] bg-[#0e639c] text-white'
+                  : 'border-[#505050] text-[#858585] hover:border-[#777] hover:text-[#cccccc]'
               }`}
             >
               {t.label}
@@ -309,20 +296,20 @@ function TemplatesTab() {
             <textarea
               value={selected.body}
               onChange={(e) => setSelected((t) => t ? { ...t, body: e.target.value } : t)}
-              rows={10}
-              className="input resize-none leading-relaxed"
-              placeholder="Dear {company} hiring team,&#10;&#10;I'm excited to apply for the {position} role…"
+              rows={12}
+              className="input resize-y leading-relaxed font-mono text-[13px]"
+              placeholder={'Dear {company} hiring team,\n\nI\'m excited to apply for the {position} role…'}
             />
           </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between pt-1 border-t border-[#3e3e42]">
             {templates.some((t) => t.id === selected.id) ? (
-              <button type="button" onClick={() => handleDelete(selected.id)} className="text-xs text-[#e05b5b] hover:text-[#f07070] transition-colors">
-                Delete
+              <button type="button" onClick={() => handleDelete(selected.id)} className="text-[13px] text-[#cc6666] hover:text-[#e07070] transition-colors">
+                Delete template
               </button>
             ) : <span />}
             <div className="flex items-center gap-3">
-              {saved && <span className="text-xs text-[#4a9]">Saved</span>}
-              <button type="submit" className="btn-primary max-w-[120px]">Save</button>
+              {saved && <span className="text-[13px] text-[#4ec9b0]">Saved</span>}
+              <button type="submit" className="btn-primary">Save changes</button>
             </div>
           </div>
         </form>
@@ -357,23 +344,20 @@ function ApiTab() {
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     await Promise.all([
-      setGroqApiKey(groqKey),
-      setGroqModel(groqModel),
+      setGroqApiKey(groqKey), setGroqModel(groqModel),
       setNotionCredentials(notionToken, notionDb),
-      setSheetsEndpoint(sheetsUrl),
-      saveSettings({ logBackend }),
+      setSheetsEndpoint(sheetsUrl), saveSettings({ logBackend }),
     ]);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
 
   return (
-    <form className="flex flex-col gap-8" onSubmit={handleSave}>
+    <form className="max-w-xl flex flex-col gap-8" onSubmit={handleSave}>
       {/* Groq */}
       <section className="flex flex-col gap-4">
         <div>
-          <h2 className="font-semibold text-[#e8e8e8]">AI — Groq</h2>
-          <p className="text-xs text-[#555] mt-0.5">Powers motivation generation and open question answering</p>
+          <p className="section-title">AI — Groq</p>
+          <p className="section-desc">Powers motivation generation and open-question answering</p>
         </div>
         <Field
           label="API Key"
@@ -381,7 +365,7 @@ function ApiTab() {
           value={groqKey}
           onChange={setGroqKeyState}
           placeholder="gsk_…"
-          hint="Stored locally — never synced to other devices"
+          hint="Stored locally in this browser only — never synced"
         />
         <Field
           label="Model"
@@ -391,49 +375,42 @@ function ApiTab() {
         />
       </section>
 
-      <div className="divider" />
+      <div className="border-t border-[#3e3e42]" />
 
       {/* Logging */}
       <section className="flex flex-col gap-4">
         <div>
-          <h2 className="font-semibold text-[#e8e8e8]">Application Log</h2>
-          <p className="text-xs text-[#555] mt-0.5">Log filled applications to Notion or Google Sheets</p>
+          <p className="section-title">Application Log</p>
+          <p className="section-desc">Sync filled applications to Notion or Google Sheets. A local copy is always kept.</p>
         </div>
-
         <div>
           <label className="label">Backend</label>
-          <select
-            value={logBackend}
-            onChange={(e) => setLogBackend(e.target.value as AppSettings['logBackend'])}
-            className="input"
-          >
-            <option value="off">Off</option>
+          <select value={logBackend} onChange={(e) => setLogBackend(e.target.value as AppSettings['logBackend'])} className="input">
+            <option value="off">Off — local only</option>
             <option value="notion">Notion</option>
             <option value="sheets">Google Sheets</option>
           </select>
         </div>
-
         {logBackend === 'notion' && (
-          <>
+          <div className="flex flex-col gap-4">
             <Field label="Integration Token" type="password" value={notionToken} onChange={setNotionToken} placeholder="secret_…" />
             <Field label="Database ID" value={notionDb} onChange={setNotionDb} placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
-          </>
+          </div>
         )}
-
         {logBackend === 'sheets' && (
           <Field label="Apps Script Web App URL" value={sheetsUrl} onChange={setSheetsUrl} placeholder="https://script.google.com/macros/s/…/exec" />
         )}
       </section>
 
-      <div className="flex items-center gap-4 pt-2">
-        <button type="submit" className="btn-primary max-w-[160px]">Save settings</button>
-        {saved && <span className="text-xs text-[#4a9]">Saved</span>}
+      <div className="flex items-center gap-4">
+        <button type="submit" className="btn-primary">Save settings</button>
+        {saved && <span className="text-[13px] text-[#4ec9b0]">Saved</span>}
       </div>
     </form>
   );
 }
 
-// ─── Reusable Field ───────────────────────────────────────────────────────────
+// ─── Shared Field component ───────────────────────────────────────────────────
 
 function Field({
   label, value, onChange, type = 'text', placeholder, required, hint, autoComplete,
@@ -448,7 +425,7 @@ function Field({
   autoComplete?: string;
 }) {
   return (
-    <div>
+    <div className="flex flex-col gap-0">
       <label className="label">{label}</label>
       <input
         type={type}
@@ -459,7 +436,7 @@ function Field({
         autoComplete={autoComplete ?? 'off'}
         className="input"
       />
-      {hint && <p className="mt-1.5 text-xs text-[#555]">{hint}</p>}
+      {hint && <p className="mt-1.5 text-[12px] text-[#767676]">{hint}</p>}
     </div>
   );
 }

@@ -23,7 +23,7 @@ export default function App() {
   useEffect(() => {
     Promise.all([getProfiles(), getActiveProfileId(), getGroqApiKey(), getApplicationLog()]).then(
       ([profs, aid, key, logs]) => {
-        setProfiles(profs.map(p => ({ id: p.id, label: p.label })));
+        setProfiles(profs.map((p) => ({ id: p.id, label: p.label })));
         setActiveId(aid || profs[0]?.id || '');
         setHasGroqKey(Boolean(key));
         setRecentLogs(logs.slice(0, 10));
@@ -45,10 +45,7 @@ export default function App() {
   }, []);
 
   const handleFill = useCallback(async () => {
-    setFilling(true);
-    setSummary(null);
-    setOpenQuestions([]);
-    setError(null);
+    setFilling(true); setSummary(null); setOpenQuestions([]); setError(null);
     const [tab] = await new Promise<chrome.tabs.Tab[]>((res) =>
       chrome.tabs.query({ active: true, currentWindow: true }, res),
     );
@@ -64,8 +61,7 @@ export default function App() {
 
   const handleAnswerQuestions = useCallback(async () => {
     if (!openQuestions.length || !hasGroqKey) return;
-    setAnsweringQuestions(true);
-    setError(null);
+    setAnsweringQuestions(true); setError(null);
     chrome.runtime.sendMessage(
       { type: 'ANSWER_QUESTIONS', questions: openQuestions, profileId: activeId, jobInfo: jobInfo ?? {} },
       async (resp) => {
@@ -89,9 +85,7 @@ export default function App() {
   }, [openQuestions, hasGroqKey, activeId, jobInfo]);
 
   const handleGenerate = useCallback(async () => {
-    setGenerating(true);
-    setGeneratedText('');
-    setError(null);
+    setGenerating(true); setGeneratedText(''); setError(null);
     chrome.runtime.sendMessage(
       { type: 'GENERATE_COVER', jobInfo: jobInfo ?? {}, profileId: activeId },
       (resp) => {
@@ -104,10 +98,10 @@ export default function App() {
 
   if (profiles.length === 0) {
     return (
-      <div className="w-[400px] h-[200px] bg-[#111] flex flex-col items-center justify-center gap-4 p-6">
-        <span className="text-[#e8e8e8] font-semibold tracking-tight">JobFill</span>
-        <p className="text-sm text-[#666] text-center">No profiles yet. Add one in settings to get started.</p>
-        <button onClick={() => chrome.runtime.openOptionsPage()} className="btn-primary max-w-[180px]">
+      <div className="w-[380px] bg-[#1e1e1e] text-[#cccccc] p-8 flex flex-col items-center gap-4 text-center">
+        <span className="font-semibold text-[#e8e8e8]">JobFill</span>
+        <p className="text-[13px] text-[#767676]">No profiles yet. Add one in settings to get started.</p>
+        <button onClick={() => chrome.runtime.openOptionsPage()} className="btn-primary w-full max-w-[200px]">
           Open Settings
         </button>
       </div>
@@ -115,93 +109,83 @@ export default function App() {
   }
 
   return (
-    <div className="w-[400px] bg-[#111] text-[#e8e8e8] flex flex-col font-sans text-sm select-none">
+    <div className="w-[380px] bg-[#1e1e1e] text-[#cccccc] flex flex-col font-sans text-[13px]">
       {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 border-b border-[#222]">
-        <span className="font-semibold tracking-tight text-[#e8e8e8]">JobFill</span>
+      <header className="bg-[#252526] border-b border-[#3e3e42] px-4 py-3 flex items-center justify-between">
+        <span className="font-semibold text-[#e8e8e8] text-sm">JobFill</span>
         <div className="flex items-center gap-3">
-          {profiles.length > 1 && (
+          {profiles.length > 1 ? (
             <select
               value={activeId}
               onChange={(e) => handleProfileChange(e.target.value)}
-              className="bg-[#1e1e1e] border border-[#333] text-[#aaa] text-xs rounded-md px-2 py-1 focus:outline-none focus:border-[#555]"
+              className="bg-[#3c3c3c] border border-[#505050] text-[#cccccc] text-xs rounded px-2 py-1 focus:outline-none focus:border-[#777]"
             >
-              {profiles.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
+              {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select>
-          )}
-          {profiles.length === 1 && (
-            <span className="text-xs text-[#555]">{profiles[0].label}</span>
+          ) : (
+            <span className="text-xs text-[#767676]">{profiles[0]?.label}</span>
           )}
           <button
             onClick={() => chrome.runtime.openOptionsPage()}
-            className="text-[#444] hover:text-[#888] transition-colors text-lg leading-none"
+            className="text-[#767676] hover:text-[#cccccc] transition-colors text-base leading-none"
             title="Settings"
-          >
-            ⚙
-          </button>
+          >⚙</button>
         </div>
       </header>
 
-      <div className="flex flex-col gap-0">
-        {/* Job info */}
-        {jobInfo && (jobInfo.company || jobInfo.position) && (
-          <div className="px-4 py-2.5 border-b border-[#1e1e1e] bg-[#161616]">
-            <p className="text-xs text-[#666] truncate">
-              {[jobInfo.position, jobInfo.company].filter(Boolean).join('  ·  ')}
-            </p>
-          </div>
-        )}
+      {/* Job info bar */}
+      {jobInfo && (jobInfo.company || jobInfo.position) && (
+        <div className="px-4 py-2 bg-[#252526] border-b border-[#3e3e42]">
+          <p className="text-xs text-[#767676] truncate">
+            {[jobInfo.position, jobInfo.company].filter(Boolean).join('  ·  ')}
+          </p>
+        </div>
+      )}
 
-        {/* Main fill area */}
+      {/* Content */}
+      <div className="flex flex-col divide-y divide-[#2d2d2d]">
+        {/* Fill */}
         <div className="p-4 flex flex-col gap-3">
           <button
             onClick={handleFill}
             disabled={filling || !activeId}
-            className="btn-primary flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {filling ? <><Spinner /> Filling…</> : 'Fill Form'}
+            {filling ? <><Spinner />Filling…</> : 'Fill Form'}
           </button>
 
           {error && (
-            <p className="text-xs text-[#e05b5b] bg-[#1e1414] border border-[#3a2020] rounded-lg px-3 py-2">
+            <div className="bg-[#2d1b1b] border border-[#6b2b2b] rounded px-3 py-2 text-xs text-[#f48771]">
               {error}
-            </p>
+            </div>
           )}
 
           {summary && <SummaryRow summary={summary} />}
         </div>
 
-        {/* AI section */}
+        {/* AI */}
         {hasGroqKey && (
-          <div className="border-t border-[#1e1e1e] px-4 py-3 flex flex-col gap-2">
+          <div className="p-4 flex flex-col gap-2">
             {openQuestions.length > 0 && (
-              <button
+              <ActionButton
                 onClick={handleAnswerQuestions}
-                disabled={answeringQuestions}
-                className="w-full rounded-lg border border-[#333] bg-[#1a1a1a] py-2 text-xs text-[#aaa] hover:border-[#555] hover:text-[#e8e8e8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-              >
-                {answeringQuestions
-                  ? <><Spinner size="sm" /> Answering…</>
-                  : `Answer ${openQuestions.length} question${openQuestions.length > 1 ? 's' : ''} with AI`}
-              </button>
+                loading={answeringQuestions}
+                loadingLabel="Answering…"
+                label={`Answer ${openQuestions.length} open question${openQuestions.length > 1 ? 's' : ''}`}
+              />
             )}
-
-            <button
+            <ActionButton
               onClick={handleGenerate}
-              disabled={generating}
-              className="w-full rounded-lg border border-[#333] bg-[#1a1a1a] py-2 text-xs text-[#aaa] hover:border-[#555] hover:text-[#e8e8e8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-            >
-              {generating ? <><Spinner size="sm" /> Generating…</> : 'Generate motivation'}
-            </button>
-
+              loading={generating}
+              loadingLabel="Generating…"
+              label="Generate motivation"
+            />
             {generatedText && (
               <div className="flex flex-col gap-2 pt-1">
                 <textarea
                   value={generatedText}
                   onChange={(e) => setGeneratedText(e.target.value)}
-                  className="input h-28 resize-none text-xs leading-relaxed"
+                  className="input h-28 resize-none text-[13px] leading-relaxed"
                 />
                 <button
                   onClick={() => {
@@ -209,10 +193,8 @@ export default function App() {
                       if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'FILL_COVER_TEXT', text: generatedText });
                     });
                   }}
-                  className="btn-primary text-xs py-2"
-                >
-                  Insert into field
-                </button>
+                  className="btn-primary w-full"
+                >Insert into field</button>
               </div>
             )}
           </div>
@@ -220,25 +202,21 @@ export default function App() {
 
         {/* Recent logs */}
         {recentLogs.length > 0 && (
-          <div className="border-t border-[#1e1e1e] px-4 py-3">
+          <div className="px-4 py-3">
             <button
               onClick={() => setShowLogs((v) => !v)}
-              className="flex w-full items-center justify-between text-xs text-[#444] hover:text-[#888] transition-colors"
+              className="flex w-full items-center justify-between text-xs text-[#767676] hover:text-[#cccccc] transition-colors"
             >
-              <span>Recent ({recentLogs.length})</span>
-              <span className="font-mono">{showLogs ? '−' : '+'}</span>
+              <span>Recent applications ({recentLogs.length})</span>
+              <span>{showLogs ? '−' : '+'}</span>
             </button>
             {showLogs && (
-              <div className="mt-2 flex flex-col gap-1 max-h-32 overflow-y-auto">
+              <div className="mt-2 flex flex-col max-h-36 overflow-y-auto">
                 {recentLogs.map((e) => (
-                  <div key={e.id} className="flex items-center justify-between py-1.5 border-b border-[#1e1e1e] last:border-0 gap-2">
-                    <span className="truncate text-xs text-[#666] min-w-0">
-                      {e.position || e.company || e.url}
-                    </span>
-                    <span className={`shrink-0 text-[10px] tabular-nums ${
-                      e.remoteSync === 'ok' ? 'text-[#4a9] '
-                      : e.remoteSync === 'failed' ? 'text-[#e05b5b]'
-                      : 'text-[#888]'
+                  <div key={e.id} className="flex items-center justify-between py-1.5 border-b border-[#2d2d2d] last:border-0 gap-2">
+                    <span className="truncate text-xs text-[#858585] min-w-0">{e.position || e.company || e.url}</span>
+                    <span className={`shrink-0 text-[11px] ${
+                      e.remoteSync === 'ok' ? 'text-[#4ec9b0]' : e.remoteSync === 'failed' ? 'text-[#f48771]' : 'text-[#767676]'
                     }`}>{e.remoteSync}</span>
                   </div>
                 ))}
@@ -246,6 +224,16 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* Footer */}
+        <div className="px-4 py-2.5 flex items-center justify-end">
+          <a
+            href="https://www.instagram.com/dias_nur420/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] text-[#585858] hover:text-[#767676] transition-colors"
+          >@dias_nur420</a>
+        </div>
       </div>
     </div>
   );
@@ -255,24 +243,40 @@ export default function App() {
 
 function SummaryRow({ summary }: { summary: FillSummary }) {
   const items = [
-    { value: summary.high, label: 'filled', color: 'text-[#4a9]' },
-    { value: summary.medium, label: 'review', color: 'text-[#a83]' },
-    { value: summary.unrecognized, label: 'skipped', color: 'text-[#555]' },
-    ...(summary.fileInputs > 0 ? [{ value: summary.fileInputs, label: 'attach', color: 'text-[#666]' }] : []),
-    ...(summary.aiQuestions > 0 ? [{ value: summary.aiQuestions, label: 'AI', color: 'text-[#888]' }] : []),
-  ].filter(i => i.value > 0);
+    { value: summary.high, label: 'filled', color: '#4ec9b0' },
+    ...(summary.medium > 0 ? [{ value: summary.medium, label: 'review', color: '#ce9178' }] : []),
+    ...(summary.unrecognized > 0 ? [{ value: summary.unrecognized, label: 'skipped', color: '#585858' }] : []),
+    ...(summary.fileInputs > 0 ? [{ value: summary.fileInputs, label: 'attach', color: '#767676' }] : []),
+    ...(summary.aiQuestions > 0 ? [{ value: summary.aiQuestions, label: 'AI', color: '#9cdcfe' }] : []),
+  ].filter((i) => i.value > 0);
 
   if (items.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-4 px-1">
+    <div className="flex items-center gap-5 px-0.5 pt-0.5">
       {items.map((item) => (
-        <div key={item.label} className="flex items-baseline gap-1">
-          <span className={`text-base font-semibold tabular-nums leading-none ${item.color}`}>{item.value}</span>
-          <span className="text-[10px] text-[#444] uppercase tracking-wide">{item.label}</span>
+        <div key={item.label} className="flex items-baseline gap-1.5">
+          <span className="text-[15px] font-semibold tabular-nums leading-none" style={{ color: item.color }}>
+            {item.value}
+          </span>
+          <span className="text-[10px] uppercase tracking-wider text-[#585858]">{item.label}</span>
         </div>
       ))}
     </div>
+  );
+}
+
+function ActionButton({
+  onClick, loading, loadingLabel, label,
+}: { onClick: () => void; loading: boolean; loadingLabel: string; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="w-full rounded border border-[#505050] bg-transparent py-2 text-xs text-[#cccccc] hover:border-[#777] hover:bg-[#2d2d2d] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+    >
+      {loading ? <><Spinner size="sm" />{loadingLabel}</> : label}
+    </button>
   );
 }
 
@@ -281,7 +285,7 @@ function Spinner({ size = 'md' }: { size?: 'sm' | 'md' }) {
   return (
     <svg className={`animate-spin ${s} shrink-0`} viewBox="0 0 24 24" fill="none">
       <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-      <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      <path className="opacity-70" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
   );
 }

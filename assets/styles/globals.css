@@ -8,41 +8,42 @@
   }
 
   body {
-    background: #111;
-    color: #e8e8e8;
+    background: #1e1e1e;
+    color: #cccccc;
   }
 
   * {
     box-sizing: border-box;
+    min-width: 0;
   }
 }
 
 @layer components {
   .label {
-    @apply block text-[11px] font-medium tracking-wide uppercase text-[#666] mb-1.5;
+    @apply block text-[11px] font-medium tracking-widest uppercase text-[#767676] mb-1.5;
   }
 
   .input {
-    @apply w-full rounded-lg bg-[#1e1e1e] border border-[#333] px-3 py-2 text-sm text-[#e8e8e8]
-           focus:outline-none focus:border-[#555] focus:bg-[#242424]
-           placeholder:text-[#444] transition-colors;
+    @apply w-full rounded-md bg-[#3c3c3c] border border-[#505050] px-3 py-2.5 text-sm text-[#cccccc]
+           focus:outline-none focus:border-[#777] focus:bg-[#444]
+           placeholder:text-[#585858] transition-colors;
   }
 
   .btn-primary {
-    @apply w-full rounded-lg bg-white text-[#111] font-semibold text-sm py-2.5
-           hover:bg-[#e8e8e8] active:scale-[.98] transition-all;
+    @apply rounded-md bg-[#0e639c] text-white font-medium text-sm px-5 py-2.5
+           hover:bg-[#1177bb] active:scale-[.98] transition-all whitespace-nowrap;
   }
 
   .btn-secondary {
-    @apply rounded-lg border border-[#333] bg-[#1e1e1e] px-3 py-1.5 text-[#aaa] text-xs
-           hover:border-[#555] hover:text-[#e8e8e8] transition-colors;
+    @apply rounded-md border border-[#505050] bg-transparent px-3 py-2 text-[#cccccc] text-sm
+           hover:border-[#777] hover:bg-[#2d2d2d] transition-colors whitespace-nowrap;
   }
 
-  .card {
-    @apply bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5;
+  .section-title {
+    @apply text-[15px] font-semibold text-[#e8e8e8] mb-0.5;
   }
 
-  .divider {
-    @apply border-t border-[#222] my-4;
+  .section-desc {
+    @apply text-[13px] text-[#767676] mb-5;
   }
 }
