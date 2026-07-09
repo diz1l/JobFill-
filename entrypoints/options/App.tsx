@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Profile, CoverTemplate, AppSettings } from '../../shared/types';
 import { createEmptyProfile } from '../../shared/types';
 import {
@@ -19,6 +19,29 @@ const NAV: { id: Tab; label: string }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('profiles');
+  const [sidebarWidth, setSidebarWidth] = useState(160);
+  const isResizing = useRef(false);
+
+  const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (ev: MouseEvent) => {
+      if (!isResizing.current) return;
+      setSidebarWidth(Math.max(100, Math.min(360, ev.clientX)));
+    };
+    const onUp = () => {
+      isResizing.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#1e1e1e] text-[#cccccc] font-sans flex flex-col">
@@ -38,12 +61,15 @@ export default function App() {
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-36 shrink-0 bg-[#252526] border-r border-[#3e3e42] pt-4 px-2 flex flex-col gap-0.5">
+        <aside
+          style={{ width: sidebarWidth }}
+          className="shrink-0 bg-[#252526] pt-4 px-2 flex flex-col gap-0.5 overflow-hidden"
+        >
           {NAV.map(({ id, label }) => (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
+              className={`w-full text-left px-3 py-2 rounded text-sm transition-colors whitespace-nowrap overflow-hidden text-ellipsis ${
                 tab === id
                   ? 'bg-[#37373d] text-[#e8e8e8]'
                   : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#2d2d2d]'
@@ -54,8 +80,15 @@ export default function App() {
           ))}
         </aside>
 
-        {/* Main content — fills the rest of the page width */}
-        <main className="flex-1 overflow-y-auto p-5">
+        {/* Drag handle */}
+        <div
+          onMouseDown={onDividerMouseDown}
+          className="w-1 shrink-0 bg-[#3e3e42] hover:bg-[#0e639c] cursor-col-resize transition-colors active:bg-[#0e639c]"
+          title="Drag to resize"
+        />
+
+        {/* Main content */}
+        <main className="flex-1 overflow-y-auto p-5 min-w-0">
           {tab === 'profiles' && <ProfilesTab />}
           {tab === 'templates' && <TemplatesTab />}
           {tab === 'api' && <ApiTab />}
