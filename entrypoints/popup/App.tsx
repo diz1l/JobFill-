@@ -98,7 +98,7 @@ export default function App() {
 
   if (profiles.length === 0) {
     return (
-      <div className="w-[640px] h-[360px] bg-[#1e1e1e] text-[#cccccc] flex flex-col items-center justify-center gap-4 text-center p-8">
+      <div className="w-[380px] h-[214px] bg-[#1e1e1e] text-[#cccccc] flex flex-col items-center justify-center gap-4 text-center p-8">
         <span className="font-semibold text-[#e8e8e8]">JobFill</span>
         <p className="text-[13px] text-[#767676]">No profiles yet. Add one in settings to get started.</p>
         <button onClick={() => chrome.runtime.openOptionsPage()} className="btn-primary w-full max-w-[200px]">
@@ -109,7 +109,7 @@ export default function App() {
   }
 
   return (
-    <div className="w-[640px] h-[360px] bg-[#1e1e1e] text-[#cccccc] flex flex-col font-sans text-[13px] overflow-hidden">
+    <div className="w-[380px] bg-[#1e1e1e] text-[#cccccc] flex flex-col font-sans text-[13px] overflow-hidden">
       {/* Header */}
       <header className="bg-[#252526] border-b border-[#3e3e42] px-4 py-3 flex items-center justify-between">
         <span className="font-semibold text-[#e8e8e8] text-sm">JobFill</span>
@@ -143,8 +143,7 @@ export default function App() {
       )}
 
       {/* Content — scrollable */}
-      <div className="flex-1 overflow-y-auto flex flex-col divide-y divide-[#2d2d2d]">
-        {/* Fill */}
+      <div className="flex-1 overflow-y-auto flex flex-col divide-y divide-[#2d2d2d]">        {/* Fill */}
         <div className="p-4 flex flex-col gap-3">
           <button
             onClick={handleFill}

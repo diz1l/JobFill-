@@ -38,7 +38,7 @@ export default function App() {
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-44 shrink-0 bg-[#252526] border-r border-[#3e3e42] pt-5 px-2 flex flex-col gap-0.5">
+        <aside className="w-36 shrink-0 bg-[#252526] border-r border-[#3e3e42] pt-4 px-2 flex flex-col gap-0.5">
           {NAV.map(({ id, label }) => (
             <button
               key={id}
@@ -55,7 +55,7 @@ export default function App() {
         </aside>
 
         {/* Main content — fills the rest of the page width */}
-        <main className="flex-1 overflow-y-auto p-8">
+        <main className="flex-1 overflow-y-auto p-5">
           {tab === 'profiles' && <ProfilesTab />}
           {tab === 'templates' && <TemplatesTab />}
           {tab === 'api' && <ApiTab />}
@@ -109,10 +109,10 @@ function ProfilesTab() {
   }
 
   return (
-    <div className="max-w-3xl">
+    <div>  {/* no max-width — use full available space */}
       {/* Section header */}
       <div className="mb-5">
-        <div className="flex items-center justify-between gap-3 mb-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
           <p className="section-title">Profiles</p>
           <div className="flex items-center gap-2">
             <button onClick={handleExport} className="btn-secondary">Export</button>
@@ -245,9 +245,9 @@ function TemplatesTab() {
   }
 
   return (
-    <div className="max-w-3xl">
+    <div>  {/* no max-width — use full available space */}
       <div className="mb-5">
-        <div className="flex items-center justify-between gap-3 mb-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
           <p className="section-title">Cover Letter Templates</p>
           <button
             onClick={() => setSelected({ id: crypto.randomUUID(), label: 'New template', body: '' })}
@@ -352,7 +352,7 @@ function ApiTab() {
   }
 
   return (
-    <form className="max-w-xl flex flex-col gap-8" onSubmit={handleSave}>
+    <form className="max-w-lg flex flex-col gap-8" onSubmit={handleSave}>
       {/* Groq */}
       <section className="flex flex-col gap-4">
         <div>
