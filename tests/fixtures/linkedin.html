@@ -1,0 +1,54 @@
+<!-- Simplified LinkedIn Easy Apply fixture -->
+<html lang="en">
+<head>
+  <title>Frontend Engineer – Acme Corp | LinkedIn</title>
+  <meta property="og:title" content="Frontend Engineer at Acme Corp" />
+  <meta property="og:site_name" content="LinkedIn" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "JobPosting",
+    "title": "Frontend Engineer",
+    "hiringOrganization": { "@type": "Organization", "name": "Acme Corp" },
+    "description": "We are looking for a skilled Frontend Engineer to join our team."
+  }
+  </script>
+</head>
+<body>
+  <h1>Frontend Engineer</h1>
+  <form aria-label="Easy Apply">
+    <div>
+      <label for="firstName">First name</label>
+      <input id="firstName" name="firstName" type="text" autocomplete="given-name" />
+    </div>
+    <div>
+      <label for="lastName">Last name</label>
+      <input id="lastName" name="lastName" type="text" autocomplete="family-name" />
+    </div>
+    <div>
+      <label for="emailAddress">Email address</label>
+      <input id="emailAddress" name="emailAddress" type="email" autocomplete="email" />
+    </div>
+    <div>
+      <label for="phoneNumber">Phone number</label>
+      <input id="phoneNumber" name="phoneNumber" type="tel" autocomplete="tel" />
+    </div>
+    <div>
+      <label for="linkedInUrl">LinkedIn profile URL</label>
+      <input id="linkedInUrl" name="linkedInUrl" type="url" placeholder="https://linkedin.com/in/..." />
+    </div>
+    <div>
+      <label for="website">Website / Portfolio</label>
+      <input id="website" name="website" type="url" autocomplete="url" />
+    </div>
+    <div>
+      <label for="coverLetter">Cover letter</label>
+      <textarea id="coverLetter" name="coverLetter" rows="5"></textarea>
+    </div>
+    <div>
+      <label for="resume">Resume</label>
+      <input id="resume" name="resume" type="file" />
+    </div>
+  </form>
+</body>
+</html>

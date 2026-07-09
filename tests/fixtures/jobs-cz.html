@@ -1,0 +1,52 @@
+<!-- Simplified Jobs.cz application form fixture -->
+<html lang="cs">
+<head><title>Frontend Developer – Firma s.r.o. | Jobs.cz</title></head>
+<body>
+  <h1>Frontend Developer</h1>
+  <form>
+    <div>
+      <label for="jmeno">Jméno</label>
+      <input id="jmeno" name="first_name" type="text" placeholder="Vaše jméno" />
+    </div>
+    <div>
+      <label for="prijmeni">Příjmení</label>
+      <input id="prijmeni" name="last_name" type="text" placeholder="Vaše příjmení" />
+    </div>
+    <div>
+      <label for="email">E-mail</label>
+      <input id="email" name="email" type="email" autocomplete="email" placeholder="vas@email.cz" />
+    </div>
+    <div>
+      <label for="telefon">Telefon</label>
+      <input id="telefon" name="phone" type="tel" placeholder="+420 777 000 000" />
+    </div>
+    <div>
+      <label for="mesto">Město</label>
+      <input id="mesto" name="city" type="text" placeholder="Praha" />
+    </div>
+    <div>
+      <label for="linkedin">LinkedIn profil</label>
+      <input id="linkedin" name="linkedin_url" type="url" placeholder="https://linkedin.com/in/..." />
+    </div>
+    <div>
+      <label for="plat">Mzdové očekávání</label>
+      <input id="plat" name="salary_expectation" type="text" placeholder="Kč / měsíc" />
+    </div>
+    <div>
+      <label for="motivace">Motivační dopis</label>
+      <textarea id="motivace" name="cover_letter" rows="6" placeholder="Průvodní dopis..."></textarea>
+    </div>
+    <div>
+      <label for="cv">Životopis (soubor)</label>
+      <input id="cv" name="resume" type="file" />
+    </div>
+    <div>
+      <label>
+        <input type="checkbox" name="gdpr_consent" />
+        Souhlasím se zpracováním osobních údajů (GDPR)
+      </label>
+    </div>
+    <button type="submit">Odeslat přihlášku</button>
+  </form>
+</body>
+</html>

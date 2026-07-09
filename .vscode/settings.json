@@ -1,0 +1,20 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^npm show wxt versions --json 2>/dev/null \\| node -e \"const v=JSON\\.parse\\(require\\('fs'\\)\\.readFileSync\\('/dev/stdin','utf8'\\)\\); console\\.log\\(v\\.slice\\(-5\\)\\.join\\('\\\\n'\\)\\)\" && npm show @wxt-dev/module-react versions --json 2>/dev/null \\| node -e \"const v=JSON\\.parse\\(require\\('fs'\\)\\.readFileSync\\('/dev/stdin','utf8'\\)\\); console\\.log\\(v\\.slice\\(-3\\)\\.join\\('\\\\n'\\)\\)\" && npm show happy-dom versions --json 2>/dev/null \\| node -e \"const v=JSON\\.parse\\(require\\('fs'\\)\\.readFileSync\\('/dev/stdin','utf8'\\)\\); console\\.log\\(v\\.slice\\(-3\\)\\.join\\('\\\\n'\\)\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^npm show @tailwindcss/vite versions --json 2>/dev/null \\| node -e \"const v=JSON\\.parse\\(require\\('fs'\\)\\.readFileSync\\('/dev/stdin','utf8'\\)\\); console\\.log\\(v\\.slice\\(-3\\)\\.join\\('\\\\n'\\)\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "npm install": true,
+        "npx wxt": true,
+        "npx vitest": true,
+        "convert": true,
+        "/^node scripts/generate-icons\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

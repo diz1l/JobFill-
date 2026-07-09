@@ -1,0 +1,58 @@
+<!-- Simplified StartupJobs.cz fixture -->
+<html lang="cs">
+<head>
+  <title>React Developer | StartupJobs.cz</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "JobPosting",
+    "title": "React Developer",
+    "hiringOrganization": { "@type": "Organization", "name": "StartupCo s.r.o." },
+    "description": "Hledáme zkušeného React vývojáře."
+  }
+  </script>
+</head>
+<body>
+  <h1>React Developer</h1>
+  <form>
+    <fieldset>
+      <legend>Osobní údaje</legend>
+      <div>
+        <label for="krestni_jmeno">Křestní jméno</label>
+        <input id="krestni_jmeno" name="krestni_jmeno" type="text" />
+      </div>
+      <div>
+        <label for="prijmeni">Příjmení</label>
+        <input id="prijmeni" name="prijmeni" type="text" />
+      </div>
+      <div>
+        <label for="email_adresa">E-mailová adresa</label>
+        <input id="email_adresa" name="email" type="email" />
+      </div>
+      <div>
+        <label for="tel">Mobilní telefon</label>
+        <input id="tel" name="mobilni_telefon" type="tel" />
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Profily</legend>
+      <div>
+        <label for="linkedin">LinkedIn</label>
+        <input id="linkedin" name="linkedin" type="url" placeholder="https://linkedin.com/in/..." />
+      </div>
+      <div>
+        <label for="github">GitHub</label>
+        <input id="github" name="github" type="url" />
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Průvodní dopis</legend>
+      <textarea name="pruvodní_dopis" rows="8" placeholder="Proč chcete pracovat u nás?"></textarea>
+    </fieldset>
+    <div>
+      <label for="resume">CV (soubor)</label>
+      <input id="resume" type="file" />
+    </div>
+  </form>
+</body>
+</html>
