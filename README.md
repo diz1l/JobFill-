@@ -60,13 +60,42 @@ tests/
 
 ## Release roadmap
 
-| Version | Feature |
-|---|---|
-| v1 (MVP) | Single profile · heuristic fill · highlights |
-| v2 | Multi-profile · JSON export/import |
-| v3 | Cover letter templates with `{company}` / `{position}` |
-| v4 | AI motivation via Groq |
-| v5 | Application log → Notion / Google Sheets |
+| Version | Feature | Status |
+|---|---|---|
+| v1 (MVP) | Single profile · heuristic fill · highlights | ✅ done |
+| v2 | Multi-profile · JSON export/import | ✅ done |
+| v3 | Cover letter templates with `{company}` / `{position}` | ✅ done |
+| v4 | AI motivation via Groq · inline fill button · open-question answering | ✅ done |
+| v5 | Application log → Notion / Google Sheets | ✅ done |
+| **v6** | **Resume / CV parsing** — extract profile fields from uploaded PDF, DOCX, or LaTeX source; auto-populate profile on first run | planned |
+| **v7** | **Subscription tiers** — Free (limited fills/day, no AI) · Pro (unlimited fills, AI features, resume parsing, priority support) | planned |
+| **v8** | **Payments** — Stripe Checkout / Paddle integration; licence key stored in `chrome.storage.local`; backend validation worker on Cloudflare Workers | planned |
+
+### v6 — Resume parsing (detail)
+
+- **PDF / DOCX**: use PDF.js (in-browser) or send to a Cloudflare Worker that calls a document-extraction API; extract name, email, phone, links, summary
+- **LaTeX**: parse `.tex` source client-side; extract `\author`, `\href` commands and common CV class macros (`moderncv`, `altacv`, `europecv`)
+- UX: drag-and-drop on the Options → Profiles page; parsed fields pre-fill the form for review before saving
+- Privacy: file is processed entirely in-browser (PDF.js) or sent only to a user-configured endpoint; no first-party storage of document bytes
+
+### v7 — Subscription tiers (detail)
+
+| Feature | Free | Pro |
+|---|---|---|
+| Profiles | 1 | Unlimited |
+| Heuristic fills / day | 10 | Unlimited |
+| AI motivation generation | — | ✓ |
+| AI open-question answering | — | ✓ |
+| Resume / CV parsing | — | ✓ |
+| Application log | local only | Notion + Sheets sync |
+| Support | community | priority |
+
+### v8 — Payments (detail)
+
+- **Provider**: Stripe Checkout (preferred) or Paddle (simpler VAT handling for EU)
+- **Flow**: user clicks Upgrade in Options → opens Stripe-hosted checkout in new tab → on success, webhook fires to a Cloudflare Worker → Worker stores `{ userId, plan, expiresAt }` in Cloudflare KV → extension polls Worker with a licence key to verify access
+- **Licence key**: short-lived JWT signed by Worker secret; stored in `chrome.storage.local`; refreshed on browser start
+- **Privacy**: no PII sent to first-party servers beyond the licence key; payment handled entirely by Stripe/Paddle
 
 ## Icons
 

@@ -35,13 +35,16 @@ Secondary: Greenhouse, Lever, Workable, generic company career forms.
 
 ## 2. Release Plan Overview
 
-| Release | Scope | Codename |
-|---|---|---|
-| **v1 (MVP)** | Single profile, heuristic field detection, one-click fill, visual feedback | Core |
-| **v2** | Multiple profiles with per-fill selection, JSON export/import | Profiles |
-| **v3** | Cover letter templates with `{company}` / `{position}` placeholder resolution | Templates |
-| **v4** | AI motivation paragraph generation; optional AI field-classification fallback | Assist |
-| **v5** | Application logging to Notion / Google Sheets; recent applications view | Tracker |
+| Release | Scope | Codename | Status |
+|---|---|---|---|
+| **v1 (MVP)** | Single profile, heuristic field detection, one-click fill, visual feedback | Core | ✅ shipped |
+| **v2** | Multiple profiles with per-fill selection, JSON export/import | Profiles | ✅ shipped |
+| **v3** | Cover letter templates with `{company}` / `{position}` placeholder resolution | Templates | ✅ shipped |
+| **v4** | AI motivation generation; open-question answering; inline fill button | Assist | ✅ shipped |
+| **v5** | Application logging to Notion / Google Sheets; recent applications view | Tracker | ✅ shipped |
+| **v6** | Resume / CV parsing from PDF, DOCX, or LaTeX; auto-populate profile on import | Parser | planned |
+| **v7** | Subscription tiers — Free (limited) vs Pro (unlimited + AI + parsing) | Monetise | planned |
+| **v8** | Payment integration — Stripe / Paddle; licence key via Cloudflare Worker | Payments | planned |
 
 ---
 
@@ -362,3 +365,94 @@ interface ApplicationEntry {
 | Custom (div-based) comboboxes on ATS platforms | Fields unfillable | Out of scope for v1; documented limitation; candidate for v6 |
 | Groq API changes or rate limits | AI features unavailable | Feature-flagged; extension fully functional without AI; model configurable |
 | Web Store review rejection (permissions) | Delayed publication | Minimal permission set (NFR-2); per-permission justification prepared in advance |
+---
+
+## 12. Planned Features — v6–v8
+
+### 12.1 Resume / CV Parsing (v6)
+
+**Goal:** allow a user to drag-and-drop their CV and have the profile fields populated automatically, eliminating manual data entry on first setup.
+
+**Supported formats:**
+
+| Format | Extraction method |
+|---|---|
+| **PDF** | PDF.js in-browser text extraction; no file ever leaves the device |
+| **DOCX** | mammoth.js converts to plain text/HTML in-browser |
+| **LaTeX** | Regex-based parser for common CV classes (`moderncv`, `altacv`, `europecv`); extracts `\author`, `\href`, `\phone`, `\email`, common section headers |
+
+**FR-7.1** The Options → Profiles page SHALL include a drag-and-drop zone accepting `.pdf`, `.docx`, `.doc`, and `.tex` files up to 5 MB.
+
+**FR-7.2** Extracted text SHALL be passed through the existing field-matcher heuristics to map detected strings to profile fields. No raw document bytes are stored; only the mapped field values are persisted.
+
+**FR-7.3** A diff view SHALL show the user which fields would change before they confirm the import.
+
+**FR-7.4** LaTeX parsing SHALL be client-side only. PDF/DOCX parsing MAY fall back to a user-configured Cloudflare Worker endpoint if in-browser extraction quality is insufficient, with explicit user opt-in.
+
+**Security:** files are never uploaded to a first-party server. LaTeX and DOCX are parsed in-browser. PDF.js runs as a Web Worker inside the extension.
+
+---
+
+### 12.2 Subscription Tiers (v7)
+
+**Goal:** sustainable revenue model while keeping core autofill free.
+
+| Feature | Free | Pro |
+|---|---|---|
+| Profiles | 1 | Unlimited |
+| Heuristic fills / day | 10 | Unlimited |
+| AI motivation generation | — | ✓ |
+| AI open-question answering | — | ✓ |
+| Resume / CV parsing | — | ✓ |
+| Application log backends | Local only | Notion + Sheets |
+| Support | Community | Priority |
+
+**FR-8.1** Free tier limits SHALL be enforced client-side via counters in `chrome.storage.local`, with server-side validation on licence key refresh.
+
+**FR-8.2** The extension SHALL remain fully functional for heuristic fill within the free quota; AI and parsing features are gated behind the Pro licence key.
+
+**FR-8.3** An in-extension upgrade prompt SHALL appear when a free-tier limit is reached. It SHALL open the pricing page in a new tab and SHALL NOT block the user mid-fill.
+
+**FR-8.4** Licence state SHALL degrade gracefully on network failure: if the licence key cannot be refreshed, the last verified state is honoured for up to 7 days.
+
+---
+
+### 12.3 Payment Integration (v8)
+
+**Chosen provider:** Stripe Checkout (primary) with Paddle as EU-VAT fallback.
+
+**Architecture:**
+
+```
+User clicks Upgrade
+  → Options page opens Stripe Checkout (new tab)
+  → Stripe webhook fires on payment success
+  → Cloudflare Worker receives webhook, validates signature
+  → Worker writes { userId, plan, expiresAt } to Cloudflare KV
+  → Extension polls Worker with device fingerprint
+  → Worker issues short-lived JWT (24h TTL)
+  → JWT stored in chrome.storage.local as licenceKey
+  → On every AI/parsing action, extension verifies JWT signature locally
+  → JWT refreshed silently on browser start
+```
+
+**FR-9.1** Payment SHALL be handled entirely by Stripe/Paddle hosted pages. No card data ever touches the extension or the Cloudflare Worker.
+
+**FR-9.2** The Cloudflare Worker SHALL be open-source (published in this repo under `worker/`). Users can self-host if they prefer.
+
+**FR-9.3** Subscription management (cancel, upgrade, invoice history) SHALL be handled via the Stripe Customer Portal, linked from Options → Account.
+
+**FR-9.4** A licence key SHALL be portable across browsers on the same account (user provides email to link devices).
+
+**NFR (payments):** The Worker processes no personal data beyond an anonymised device hash and the Stripe customer ID. No analytics, no tracking.
+
+---
+
+### 12.4 Updated Risk Register
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| PDF.js extraction quality poor for complex CVs | Parsing unusable | Fallback to Worker-based extraction (user opt-in); manual field review step |
+| Stripe API changes or outages | Payments blocked | Graceful degradation: last licence state valid 7 days; retry queue |
+| Browser extension platform removes MV3 API used | Extension breaks | WXT abstraction layer; monitor Chrome/Firefox release notes |
+| Subscription churn if free tier too generous | Revenue insufficient | A/B test free quota; monitor conversion rate |
