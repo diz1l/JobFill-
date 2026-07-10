@@ -86,7 +86,11 @@ export function fillPage(profile: Profile, opts: FillOptions = {}): FillSummary 
     if (el instanceof HTMLSelectElement) {
       const filled = fillSelect(el, value);
       if (filled) {
-        match.confidence === 'high' ? summary.high++ : summary.medium++;
+        if (match.confidence === 'high') {
+          summary.high++;
+        } else {
+          summary.medium++;
+        }
         highlightField(el, match.confidence, durationMs);
       } else {
         summary.unrecognized++;
@@ -94,7 +98,11 @@ export function fillPage(profile: Profile, opts: FillOptions = {}): FillSummary 
       }
     } else {
       setNativeValue(el, value);
-      match.confidence === 'high' ? summary.high++ : summary.medium++;
+      if (match.confidence === 'high') {
+        summary.high++;
+      } else {
+        summary.medium++;
+      }
       highlightField(el, match.confidence, durationMs);
     }
   }
