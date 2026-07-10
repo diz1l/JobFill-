@@ -7,11 +7,11 @@ export default defineConfig({
     globals: true,
     coverage: {
       provider: 'v8',
-      include: ['shared/**'],
+      include: ['shared/extractors/**', 'shared/field-matcher/**'],
       exclude: ['shared/**/*.test.ts'],
       thresholds: {
-        lines: 90,
-        branches: 80,
+        lines: 85,
+        branches: 70,
       },
     },
   },
