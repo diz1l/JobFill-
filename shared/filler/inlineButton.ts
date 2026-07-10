@@ -2,6 +2,11 @@ const BTN_ID = '__jobfill-inline-btn';
 const TOAST_ID = '__jobfill-toast';
 const STYLE_ID = '__jobfill-inline-styles';
 
+export function isInlineButtonTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.id === BTN_ID || Boolean(target.closest(`#${BTN_ID}`));
+}
+
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -72,11 +77,18 @@ export function showInlineButton(anchor: HTMLElement, onClick: () => void): void
   const fresh = btn.cloneNode(true) as HTMLButtonElement;
   btn.replaceWith(fresh);
 
-  fresh.addEventListener('mousedown', (e) => {
+  let invoked = false;
+  const handlePress = (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
+    if (invoked) return;
+    invoked = true;
     onClick();
-  });
+  };
+
+  // Pointer events are more reliable than click on pages that aggressively manage focus.
+  fresh.addEventListener('pointerdown', handlePress);
+  fresh.addEventListener('click', handlePress);
 
   placeButton(fresh, anchor);
 }

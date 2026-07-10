@@ -3,7 +3,13 @@ import { fillPage } from '../shared/filler';
 import { setNativeValue } from '../shared/filler/setNativeValue';
 import { extractJobInfo } from '../shared/extractors';
 import { getActiveProfile, getSettings, getProfiles, getCoverTemplates } from '../shared/storage/sync';
-import { showInlineButton, repositionButton, hideInlineButton, showToast } from '../shared/filler/inlineButton';
+import {
+  showInlineButton,
+  repositionButton,
+  hideInlineButton,
+  showToast,
+  isInlineButtonTarget,
+} from '../shared/filler/inlineButton';
 import { buildFingerprint } from '../shared/field-matcher/fingerprint';
 import type { PopupToContentMessage, OpenQuestion } from '../shared/messages';
 import type { FillSummary } from '../shared/types';
@@ -98,15 +104,18 @@ function setupInlineButton() {
   const triggerFill = async () => {
     hideInlineButton();
     const result = await performFill('__active__');
-    if (result) {
-      const { summary } = result;
-      const filled = summary.high + summary.medium;
-      const parts: string[] = [`⚡ Filled ${filled} field${filled !== 1 ? 's' : ''}`];
-      if (summary.medium > 0) parts.push(`${summary.medium} need review`);
-      if (summary.fileInputs > 0) parts.push(`${summary.fileInputs} file${summary.fileInputs > 1 ? 's' : ''} attach manually`);
-      if (summary.aiQuestions > 0) parts.push(`${summary.aiQuestions} open question${summary.aiQuestions > 1 ? 's' : ''} — use popup to answer`);
-      showToast(parts.join(' · '));
+    if (!result) {
+      showToast('No active profile. Open settings and choose a profile.');
+      return;
     }
+
+    const { summary } = result;
+    const filled = summary.high + summary.medium;
+    const parts: string[] = [`⚡ Filled ${filled} field${filled !== 1 ? 's' : ''}`];
+    if (summary.medium > 0) parts.push(`${summary.medium} need review`);
+    if (summary.fileInputs > 0) parts.push(`${summary.fileInputs} file${summary.fileInputs > 1 ? 's' : ''} attach manually`);
+    if (summary.aiQuestions > 0) parts.push(`${summary.aiQuestions} open question${summary.aiQuestions > 1 ? 's' : ''} — use popup to answer`);
+    showToast(parts.join(' · '));
   };
 
   document.addEventListener('focusin', (e) => {
@@ -116,11 +125,12 @@ function setupInlineButton() {
     showInlineButton(currentAnchor, triggerFill);
   });
 
-  document.addEventListener('focusout', () => {
+  document.addEventListener('focusout', (e) => {
+    if (isInlineButtonTarget(e.relatedTarget)) return;
     hideTimer = setTimeout(() => {
       hideInlineButton();
       currentAnchor = null;
-    }, 200);
+    }, 350);
   });
 
   const reposition = () => {
