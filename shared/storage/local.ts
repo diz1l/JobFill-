@@ -1,4 +1,4 @@
-import type { LocalData, ApplicationEntry } from '../types';
+import type { LocalData, ApplicationEntry, RemoteSyncStatus } from '../types';
 
 const KEYS = {
   groqApiKey: 'groq_api_key',
@@ -8,6 +8,27 @@ const KEYS = {
   sheetsEndpoint: 'sheets_endpoint',
   applicationLog: 'application_log',
 } as const;
+
+/** Newest-first cap on the local journal. */
+export const MAX_LOG_ENTRIES = 500;
+
+// ─── Write serialisation ──────────────────────────────────────────────────────
+
+/**
+ * The journal is a single array under one key, so concurrent read-modify-write
+ * would drop entries. All mutations go through this chain; the background worker
+ * is in practice the only writer, which makes the guarantee complete for it.
+ */
+let logChain: Promise<unknown> = Promise.resolve();
+
+function enqueueLog<T>(op: () => Promise<T>): Promise<T> {
+  const run = logChain.then(op, op);
+  logChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
 
 // ─── API credentials ─────────────────────────────────────────────────────────
 
@@ -57,27 +78,46 @@ export async function setSheetsEndpoint(url: string): Promise<void> {
 
 // ─── Application log ──────────────────────────────────────────────────────────
 
+/** Defensive read: a hand-edited / half-written value must not crash the popup. */
+function readLog(raw: unknown): ApplicationEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (e): e is ApplicationEntry =>
+      typeof e === 'object' && e !== null && typeof (e as ApplicationEntry).id === 'string',
+  );
+}
+
 export async function getApplicationLog(): Promise<ApplicationEntry[]> {
   const r = await chrome.storage.local.get(KEYS.applicationLog);
-  return (r[KEYS.applicationLog] as ApplicationEntry[] | undefined) ?? [];
+  return readLog(r[KEYS.applicationLog]);
+}
+
+async function mutateLog(
+  mutator: (log: ApplicationEntry[]) => ApplicationEntry[],
+): Promise<ApplicationEntry[]> {
+  return enqueueLog(async () => {
+    const r = await chrome.storage.local.get(KEYS.applicationLog);
+    const next = mutator(readLog(r[KEYS.applicationLog])).slice(0, MAX_LOG_ENTRIES);
+    await chrome.storage.local.set({ [KEYS.applicationLog]: next });
+    return next;
+  });
 }
 
 export async function appendLogEntry(entry: ApplicationEntry): Promise<void> {
-  const log = await getApplicationLog();
-  log.unshift(entry); // newest first
-  // Keep at most 500 entries locally
-  if (log.length > 500) log.splice(500);
-  await chrome.storage.local.set({ [KEYS.applicationLog]: log });
+  await mutateLog((log) => [entry, ...log.filter((e) => e.id !== entry.id)]); // newest first
 }
 
 export async function updateLogEntrySync(
   id: string,
-  remoteSync: ApplicationEntry['remoteSync'],
+  remoteSync: RemoteSyncStatus,
 ): Promise<void> {
-  const log = await getApplicationLog();
-  const entry = log.find((e) => e.id === id);
-  if (entry) {
-    entry.remoteSync = remoteSync;
-    await chrome.storage.local.set({ [KEYS.applicationLog]: log });
-  }
+  await mutateLog((log) => log.map((e) => (e.id === id ? { ...e, remoteSync } : e)));
+}
+
+export async function getLogEntry(id: string): Promise<ApplicationEntry | undefined> {
+  return (await getApplicationLog()).find((e) => e.id === id);
+}
+
+export async function clearApplicationLog(): Promise<void> {
+  await mutateLog(() => []);
 }
