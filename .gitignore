@@ -2,9 +2,16 @@ node_modules/
 dist/
 .wxt/
 .output/
-testForB/
+coverage/
 *.zip
+
+# Stray build outputs created by mistyped commands (`wxt build -o dev`, `... -o #`)
+dev/
+\#/
+
+# Local throwaway build copies
+testForB/
+
 .env
 .env.local
 .DS_Store
-coverage/

@@ -74,9 +74,7 @@ function drawIcon(size) {
 
   // Draw a simple "J" using a thick stroke
   const stroke = Math.max(1, Math.round(size * 0.12));
-  const pad = Math.round(size * 0.22);
   const top = Math.round(size * 0.18);
-  const bottom = size - pad;
   const cx = Math.round(size * 0.55); // center-x of J vertical bar
   const hookEndX = Math.round(size * 0.3);
   const hookY = Math.round(size * 0.72);
