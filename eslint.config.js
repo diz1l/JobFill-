@@ -18,6 +18,14 @@ export default tseslint.config(
       'dev/',
       '#/',
       '**/*.zip',
+      // `outDir` is the repo root (so the unpacked extension sits at
+      // ./chrome-mv3), which puts built bundles next to the sources. Linting
+      // them produced thousands of no-undef/no-unused-expressions errors from
+      // minified output — the same failure that once hid the 23 real ones.
+      'chrome-mv3/',
+      'firefox-mv2/',
+      'chrome-mv3-dev/',
+      'firefox-mv2-dev/',
     ],
   },
   eslint.configs.recommended,

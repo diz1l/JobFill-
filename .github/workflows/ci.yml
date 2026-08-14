@@ -46,10 +46,29 @@ jobs:
       - name: Build Firefox
         run: npm run build:firefox
 
+      # `chrome-mv3/` and `firefox-mv2/` are committed so that a user without
+      # Node can download the repo and load the extension directly. That only
+      # stays trustworthy if the committed bytes are the ones the source
+      # produces — otherwise the download silently ships an older extension than
+      # the code being reviewed. `wxt build` is deterministic, so the two builds
+      # above should have left the working tree untouched.
+      - name: Verify the committed build matches the source
+        run: |
+          if ! git diff --quiet -- chrome-mv3 firefox-mv2; then
+            echo "::error::The committed build is stale. Run 'npm run build && npm run build:firefox' and commit the result."
+            git diff --stat -- chrome-mv3 firefox-mv2
+            exit 1
+          fi
+          echo "Committed build matches the source."
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: ci
     runs-on: ubuntu-latest
+    # Narrower than a workflow-wide grant: only this job can write, and only
+    # because publishing a release asset requires it. The `ci` job stays read-only.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -67,8 +86,23 @@ jobs:
       - name: Zip Firefox
         run: npm run zip:firefox
 
+      # `outDir` is the repository root, so `wxt zip` writes here — not into
+      # `.output/`, where this step used to look. On a clean checkout that
+      # directory does not exist at all, so a tagged push published a release
+      # with no files attached and nothing said so.
+      - name: List the archives
+        run: ls -la jobfill-*.zip
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: extension-zips
-          path: .output/*.zip
+          path: jobfill-*.zip
+
+      # Artifacts expire and need a GitHub login to download. A release asset is
+      # what someone who just wants the extension can actually click.
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: jobfill-*.zip
+          generate_release_notes: true

@@ -2,6 +2,11 @@ import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
+  // Build straight into the repo root, so the unpacked extension lives at
+  // ./chrome-mv3 and can be pointed at from chrome://extensions without
+  // digging into a dot-directory.
+  outDir: '.',
+
   modules: ['@wxt-dev/module-react'],
 
   vite: () => ({
@@ -15,21 +20,19 @@ export default defineConfig({
     description: '__MSG_extDescription__',
     default_locale: 'en',
     // `version` intentionally omitted — WXT takes it from package.json (single source of truth)
-    // `alarms` drives the application-log retry queue (FR-6.3). The MV3 worker is
-    // evicted after ~30 s idle, so a setTimeout fallback would never fire.
-    // Chrome shows no user-facing warning for this permission.
     //
-    // `webNavigation` is deliberately NOT listed (NFR-2). P0-5 used it to
-    // enumerate a tab's frames with `getAllFrames`, which costs the user-facing
-    // "Read your browsing history" warning at install — a disproportionate price
-    // for an autofiller. Frame aggregation now runs the other way round: one
-    // broadcast `tabs.sendMessage` (no permission at all), and every frame that
-    // has something to say answers over `chrome.runtime.sendMessage`, which
-    // hands us its `sender.frameId`. See entrypoints/ui/frames.ts.
-    // `scripting` is deliberately NOT listed either: nothing calls chrome.scripting,
-    // and an unused permission is a review finding in both stores — in the Firefox
-    // MV2 build it is not even a real API. Re-add it together with the activeTab +
-    // executeScript migration sketched at the bottom of entrypoints/content.ts.
+    // `alarms` drives the application-log retry queue. The MV3 worker is evicted
+    // after ~30 s idle, so a setTimeout fallback would never fire, and Chrome
+    // shows no user-facing warning for this permission.
+    //
+    // `webNavigation` is deliberately NOT listed: enumerating a tab's frames with
+    // `getAllFrames` costs the "Read your browsing history" warning at install, a
+    // disproportionate price for an autofiller. Frame aggregation runs the other
+    // way round instead — see entrypoints/ui/frames.ts.
+    //
+    // `scripting` is deliberately NOT listed either: nothing calls it, and an
+    // unused permission is a review finding in both stores — in the Firefox MV2
+    // build it is not even a real API.
     permissions: ['storage', 'activeTab', 'alarms'],
     host_permissions: [
       'https://api.groq.com/*',
@@ -37,6 +40,20 @@ export default defineConfig({
       'https://script.google.com/*',
       // Apps Script Web Apps always redirect from script.google.com to this origin
       'https://script.googleusercontent.com/*',
+    ],
+    // Alternative LLM providers, granted when the user picks one rather than at
+    // install: every entry moved up into `host_permissions` is a permission
+    // warning paid by everyone, including the majority who only ever use Groq.
+    // `chrome.permissions.request()` runs from the click in Settings, which is
+    // the user gesture Chrome requires.
+    //
+    // `https://*/*` is deliberately absent. It would make the `custom` provider
+    // work with any self-hosted endpoint, but it is the "read and change all your
+    // data on all websites" prompt — too high a price for an escape hatch.
+    optional_host_permissions: [
+      'https://openrouter.ai/*',
+      'https://api.openai.com/*',
+      'https://api.together.xyz/*',
     ],
     // Firefox requires an explicit add-on id, otherwise storage.sync is not persisted
     browser_specific_settings: {

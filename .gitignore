@@ -12,6 +12,21 @@ dev/
 # Local throwaway build copies
 testForB/
 
+# Personal editor config — tooling preferences, not project configuration
+.vscode/
+
 .env
 .env.local
 .DS_Store
+
+# wxt outDir is the repo root, so build targets land here.
+#
+# `chrome-mv3/` and `firefox-mv2/` are deliberately NOT ignored: the unpacked
+# extension is committed so that someone who does not have Node can download the
+# repository and load it straight into their browser. `wxt build` is byte-for-byte
+# reproducible, so CI re-runs it and fails if the committed output has drifted
+# from the source — see "Verify the committed build" in .github/workflows/ci.yml.
+#
+# Dev builds are noisy (HMR client, absolute paths) and stay out.
+chrome-mv3-dev/
+firefox-mv2-dev/

@@ -5,5 +5,27 @@
     "jsx": "react-jsx",
     "jsxImportSource": "react",
     "types": ["chrome"]
-  }
+  },
+
+  // `include` / `exclude` are declared here on purpose and must stay.
+  //
+  // WXT derives them in `.wxt/tsconfig.json` from `outDir`, and this project
+  // builds into the repo root (so the unpacked extension sits at ./chrome-mv3).
+  // That makes WXT emit `"exclude": [".."]`, which — resolved from `.wxt/` —
+  // excludes the entire project: `tsc --noEmit` then reports TS18003 "No inputs
+  // were found" and `npm run compile` type-checks nothing at all while looking
+  // like it ran. Overriding both keys here restores real coverage of the source.
+  //
+  // If you ever change `outDir`, re-check `npx tsc --noEmit --listFiles`: it
+  // must list the project's own .ts/.tsx files, not just a lib.d.ts.
+  "include": ["**/*.ts", "**/*.tsx", ".wxt/wxt.d.ts"],
+  "exclude": [
+    "node_modules",
+    "coverage",
+    ".output",
+    "chrome-mv3",
+    "firefox-mv2",
+    "chrome-mv3-dev",
+    "firefox-mv2-dev"
+  ]
 }
