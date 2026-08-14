@@ -46,6 +46,122 @@ describe('extractFromJsonLd', () => {
     expect(() => extractFromJsonLd(doc)).not.toThrow();
     expect(extractFromJsonLd(doc).company).toBeUndefined();
   });
+
+  it('handles an empty script tag', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json"></script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toEqual({});
+  });
+
+  it('keeps scanning after a malformed block and finds the good one', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">{ nope }</script>
+        <script type="application/ld+json">
+          {"@type":"JobPosting","title":"QA Engineer","hiringOrganization":{"name":"TestCo"}}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toMatchObject({ position: 'QA Engineer', company: 'TestCo' });
+  });
+
+  it('reads a JobPosting out of a top-level array', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          [{"@type":"BreadcrumbList"},
+           {"@type":"JobPosting","title":"Data Analyst","hiringOrganization":{"name":"ArrayCo"}}]
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toMatchObject({ position: 'Data Analyst', company: 'ArrayCo' });
+  });
+
+  it('accepts @type declared as an array', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@type":["Thing","JobPosting"],"title":"Designer","hiringOrganization":{"name":"MultiCo"}}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toMatchObject({ position: 'Designer', company: 'MultiCo' });
+  });
+
+  // ── @graph traversal — the Yoast / Schema-plugin layout ──
+  it('walks @graph to find the JobPosting', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@context":"https://schema.org","@graph":[
+            {"@type":"WebSite","name":"Board"},
+            {"@type":"Organization","name":"Not the employer"},
+            {"@type":"JobPosting","title":"DevOps Engineer","hiringOrganization":{"name":"GraphCo"}}
+          ]}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toMatchObject({ position: 'DevOps Engineer', company: 'GraphCo' });
+  });
+
+  it('walks a nested @graph', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@graph":[{"@graph":[
+            {"@type":"JobPosting","title":"Deep Role","hiringOrganization":{"name":"DeepCo"}}
+          ]}]}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toMatchObject({ position: 'Deep Role', company: 'DeepCo' });
+  });
+
+  it('returns nothing when @graph holds no JobPosting', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@graph":[{"@type":"WebSite","name":"Board"},{"@type":"Person","name":"Ada"}]}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toEqual({});
+  });
+
+  it('survives null and primitive members inside @graph', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@graph":[null,"text",42,
+            {"@type":"JobPosting","title":"Survivor","hiringOrganization":{"name":"NullCo"}}]}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toMatchObject({ position: 'Survivor', company: 'NullCo' });
+  });
+
+  it('survives a JSON-LD document that is just a string', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">"just a string"</script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc)).toEqual({});
+  });
+
+  it('leaves company and position undefined when the JobPosting omits them', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">{"@type":"JobPosting"}</script>
+      </head><body></body></html>`);
+    const info = extractFromJsonLd(doc);
+    expect(info.company).toBeUndefined();
+    expect(info.position).toBeUndefined();
+    expect(info.description).toBe('');
+  });
+
+  it('strips HTML and collapses whitespace in the description', () => {
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@type":"JobPosting","title":"X","description":"<p>Build   <b>things</b></p>\\n<ul><li>Ship</li></ul>"}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc).description).toBe('Build things Ship');
+  });
+
+  it('clips a very long description to 2000 characters', () => {
+    const long = 'a'.repeat(5000);
+    const doc = htmlToDoc(`<html><head>
+        <script type="application/ld+json">
+          {"@type":"JobPosting","title":"X","description":"${long}"}
+        </script>
+      </head><body></body></html>`);
+    expect(extractFromJsonLd(doc).description).toHaveLength(2000);
+  });
 });
 
 // ─── Open Graph extractor ─────────────────────────────────────────────────────
