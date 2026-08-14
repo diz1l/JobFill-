@@ -1,17 +1,16 @@
 import type { ApplicationEntry } from '../types';
 
 /**
- * Durable retry queue for remote application-log writes (FR-6.3, NFR-5).
- *
- * The MV3 service worker is evicted a few seconds after it goes idle, so a
- * pending retry cannot live in a module variable or a `setTimeout` closure. The
- * queue therefore lives in `chrome.storage.local` and is drained by an alarm —
- * the only timer that survives worker eviction.
+ * Durable retry queue for remote application-log writes. The MV3 service worker
+ * is evicted a few seconds after it goes idle, so a pending retry cannot live in
+ * a module variable or a `setTimeout` closure; the queue therefore lives in
+ * `chrome.storage.local` and is drained by an alarm — the only timer that
+ * survives worker eviction.
  */
 
 const QUEUE_KEY = 'remote_log_queue';
 
-/** FR-6.3: the initial attempt plus exactly one retry. */
+/** The initial attempt plus exactly one retry. */
 export const MAX_ATTEMPTS = 2;
 
 /**
@@ -23,7 +22,7 @@ export const RETRY_DELAY_MS = 60_000;
 export type RetryBackend = 'notion' | 'sheets';
 
 export interface RemoteLogTask {
-  /** `ApplicationEntry.id` — links the task back to the local journal entry. */
+  /** The `ApplicationEntry.id` this task will mark done or failed. */
   entryId: string;
   /** Full snapshot, so the retry works even if the journal was trimmed. */
   entry: ApplicationEntry;
@@ -93,9 +92,20 @@ export async function getDueTasks(now = Date.now()): Promise<RemoteLogTask[]> {
   return queue.filter((t) => t.nextAttemptAt <= now && t.attempts < MAX_ATTEMPTS);
 }
 
-/** Earliest `nextAttemptAt` still in the queue, or `null` when it is empty. */
+/**
+ * Earliest `nextAttemptAt` among tasks that can still run, or `null` when none
+ * can.
+ *
+ * The `attempts` filter has to match {@link getDueTasks} exactly. `runTask`
+ * removes a task once it succeeds or gives up, but the worker can be evicted
+ * between writing the entry status and clearing the queue — which is the very
+ * failure this queue exists to survive. Without the filter, that leftover would
+ * be reported as due forever while `getDueTasks` kept returning nothing, and the
+ * scheduler would re-arm an alarm for work it would then decline to do.
+ */
 export async function getNextDueAt(): Promise<number | null> {
   const queue = await getRetryQueue();
-  if (queue.length === 0) return null;
-  return queue.reduce((min, t) => Math.min(min, t.nextAttemptAt), Number.POSITIVE_INFINITY);
+  const live = queue.filter((t) => t.attempts < MAX_ATTEMPTS);
+  if (live.length === 0) return null;
+  return live.reduce((min, t) => Math.min(min, t.nextAttemptAt), Number.POSITIVE_INFINITY);
 }

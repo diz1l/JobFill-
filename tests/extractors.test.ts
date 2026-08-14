@@ -15,8 +15,6 @@ function htmlToDoc(html: string): Document {
   return new DOMParser().parseFromString(html, 'text/html');
 }
 
-// ─── JSON-LD extractor ────────────────────────────────────────────────────────
-
 describe('extractFromJsonLd', () => {
   it('extracts company and position from LinkedIn fixture', () => {
     const doc = loadFixture('linkedin');
@@ -164,8 +162,6 @@ describe('extractFromJsonLd', () => {
   });
 });
 
-// ─── Open Graph extractor ─────────────────────────────────────────────────────
-
 describe('extractFromOpenGraph', () => {
   it('extracts company and position from og:title with "at" separator', () => {
     const doc = htmlToDoc(`<html><head>
@@ -194,8 +190,6 @@ describe('extractFromOpenGraph', () => {
   });
 });
 
-// ─── Heading heuristics ───────────────────────────────────────────────────────
-
 describe('extractFromHeadings', () => {
   it('extracts position from h1', () => {
     const doc = loadFixture('greenhouse');
@@ -212,8 +206,6 @@ describe('extractFromHeadings', () => {
     expect(info.company).toBe('DesignCo');
   });
 });
-
-// ─── Combined extractor (fallback chain) ──────────────────────────────────────
 
 describe('extractJobInfo', () => {
   it('JSON-LD takes priority over OG', () => {

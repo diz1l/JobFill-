@@ -5,10 +5,7 @@ import { RemoteLogError, toRemoteLogError } from './remoteLog';
 /** Apps Script cold starts are slow — allow more than the Groq budget. */
 const TIMEOUT_MS = 20_000;
 
-/**
- * Validate the endpoint before spending a request on it.
- * Returns a user-facing problem description, or `undefined` when it looks fine.
- */
+/** Returns a user-facing problem description, or `undefined` when the URL is fine. */
 export function validateSheetsEndpoint(endpoint: string): string | undefined {
   if (!endpoint) return 'Google Sheets is selected as the logging backend, but no Web App URL is set.';
 
@@ -33,13 +30,13 @@ export function validateSheetsEndpoint(endpoint: string): string | undefined {
 }
 
 /**
- * POST an application entry to a user-deployed Google Apps Script Web App.
- * The endpoint must accept a JSON POST with the `ApplicationEntry` shape.
+ * POST an application entry to a user-deployed Google Apps Script Web App, which
+ * must accept a JSON POST with the `ApplicationEntry` shape.
  *
  * Apps Script *always* answers a Web App POST with a 302 to
  * `script.googleusercontent.com`, so `redirect: 'follow'` is required — and so is
  * `https://script.googleusercontent.com/*` in `host_permissions`, otherwise the
- * followed request is blocked and surfaces as an opaque network failure (P0-7).
+ * followed request is blocked and surfaces as an opaque network failure.
  */
 export async function logToSheets(entry: ApplicationEntry, endpoint: string): Promise<void> {
   const problem = validateSheetsEndpoint(endpoint);
@@ -64,7 +61,7 @@ export async function logToSheets(entry: ApplicationEntry, endpoint: string): Pr
   }
 
   // A Web App that is not shared with "Anyone" answers 200 with a Google sign-in
-  // page instead of an error status. Detect it so the user gets a real hint.
+  // page instead of an error status.
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('text/html')) {
     const body = await response.text().catch(() => '');

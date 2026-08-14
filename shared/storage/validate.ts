@@ -2,15 +2,12 @@ import type { AppSettings, CoverTemplate, LogBackend, Profile, SyncData } from '
 import { DEFAULT_SETTINGS, SYNC_SCHEMA_VERSION } from '../types';
 
 /**
- * Hand-written schema validation for everything that enters `chrome.storage.sync`
- * (FR-1.4). No runtime dependency: the whole file is ~200 lines and adds nothing
- * to the bundle beyond what it validates.
+ * Hand-written schema validation for everything that enters `chrome.storage.sync`;
+ * a validator library would cost more bundle than the rules it checks.
  *
- * Two modes:
- *   - **strict** (`importSyncData`) — a structurally broken file is rejected with
- *     a message that names the offending path;
- *   - **lenient** (reading storage, migrating the legacy blob) — everything is
- *     repaired to a usable shape, because refusing to boot is never an option.
+ * **strict** (`importSyncData`) rejects a structurally broken file with a message
+ * naming the offending path. **lenient** (storage reads, legacy-blob migration)
+ * repairs everything to a usable shape — refusing to boot is never an option.
  */
 
 export type IssueSeverity = 'error' | 'warning';
@@ -238,10 +235,9 @@ export function normalizeSettings(raw: unknown, issues: ValidationIssue[]): AppS
     });
   }
 
-  // FR-5.3 opt-in. Fail-closed on purpose: this flag is the only thing standing
-  // between a fill and a network request, so anything that is not the boolean
-  // `true` — a string "true", a 1, a missing key, a corrupted item — leaves the
-  // feature off. A stored `false` is not an issue, it is the default.
+  // Fail-closed on purpose: this flag is the only thing standing between a fill
+  // and a network request, so anything that is not the boolean `true` — a string
+  // "true", a 1, a missing key, a corrupted item — leaves the feature off.
   let llmFieldClassification = DEFAULT_SETTINGS.llmFieldClassification;
   const rawClassification = raw.llmFieldClassification;
   if (typeof rawClassification === 'boolean') {

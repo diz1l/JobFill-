@@ -2,10 +2,8 @@ import { HttpError, type HttpErrorKind } from './http';
 import { REMOTE_LOG_ERROR_MESSAGES, type RemoteLogErrorKind } from '../messages';
 
 /**
- * Error raised by the Notion / Sheets clients.
- *
- * Carries a UI-ready `message` (never raw backend text) plus `detail` for the
- * console, and a `retryable` flag consumed by the retry queue (FR-6.3).
+ * Error raised by the Notion / Sheets clients: a UI-ready message plus a
+ * `retryable` flag consumed by the retry queue.
  */
 export class RemoteLogError extends Error {
   constructor(
@@ -44,8 +42,7 @@ const HTTP_TO_LOG_KIND: Record<HttpErrorKind, RemoteLogErrorKind> = {
 
 /**
  * Convert anything thrown inside a logging client into a `RemoteLogError`.
- * `overrides` lets a client replace the generic copy with service-specific
- * guidance (e.g. "share the database with your integration").
+ * `overrides` replaces the generic copy with service-specific guidance.
  */
 export function toRemoteLogError(
   err: unknown,

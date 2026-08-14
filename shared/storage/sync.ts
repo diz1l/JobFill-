@@ -13,37 +13,18 @@ import {
 /**
  * `chrome.storage.sync` access layer.
  *
- * ## Why one key per entity (P1-8)
+ * ## Why one key per entity
  *
- * The previous layout kept the entire `SyncData` in a single item and every
- * write was read-all → merge → write-all. Two contexts (popup + options) writing
- * at the same time silently dropped one of the changes, and — less obviously —
- * the whole profile set had to fit into `QUOTA_BYTES_PER_ITEM` (8 KB), not the
- * 100 KB the spec assumes.
+ * The previous layout kept all of `SyncData` in one item, so every write was
+ * read-all → merge → write-all: two contexts (popup + options) writing at the
+ * same time silently dropped one change, and — less obviously — the whole profile
+ * set had to fit `QUOTA_BYTES_PER_ITEM` (8 KB) rather than the 100 KB total quota.
  *
- * Now each profile and each template owns its own key, with a separate key
- * holding the display order:
- *
- * ```
- * jobfill.schemaVersion    number
- * jobfill.profileIds       string[]      order only
- * jobfill.profile.<id>     Profile
- * jobfill.activeProfileId  string
- * jobfill.templateIds      string[]
- * jobfill.template.<id>    CoverTemplate
- * jobfill.settings         AppSettings
- * ```
- *
- * Consequences:
- *  - the popup switching the active profile and the options page editing a
- *    profile now touch disjoint keys — they cannot clobber each other;
- *  - editing two different profiles concurrently is safe; editing the *same*
- *    profile resolves to last-write-wins, which is the semantically correct
- *    outcome (chrome.storage offers no compare-and-swap primitive, so a true
- *    transaction is not available at any price);
- *  - writes inside one context are additionally serialised through a promise
- *    queue, so `await`-less callers cannot interleave a read-modify-write;
- *  - per-item quota now applies per profile instead of to the whole dataset.
+ * Now `jobfill.profileIds` / `jobfill.templateIds` hold display order only and
+ * each entity lives under `jobfill.profile.<id>` / `jobfill.template.<id>`, so
+ * concurrent edits touch disjoint keys and the per-item quota applies per profile.
+ * Editing the *same* profile from two places is last-write-wins: chrome.storage
+ * offers no compare-and-swap, so a real transaction is not available at any price.
  */
 
 const PREFIX = 'jobfill.';
@@ -185,7 +166,6 @@ function unchanged(a: unknown, b: unknown): boolean {
 
 // ─── Full snapshot ────────────────────────────────────────────────────────────
 
-/** Everything in one object — used by the export path and by content scripts. */
 export async function getSyncSnapshot(): Promise<SyncData> {
   return readAll();
 }
@@ -337,12 +317,10 @@ export async function deleteCoverTemplate(id: string): Promise<void> {
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 /**
- * Both accessors below run every value through `normalizeSettings`, which is
- * also what makes the FR-5.3 opt-in (`settings.llmFieldClassification`) safe:
- * the flag is `false` unless the stored item holds a literal boolean `true`, so
- * a corrupted or hand-edited sync item can not switch network egress on. Read it
- * with {@link getSettings}, write it with `saveSettings({ llmFieldClassification })`
- * — there is deliberately no dedicated setter that could bypass the validator.
+ * Both accessors run every value through `normalizeSettings`, which is what makes
+ * the `llmFieldClassification` opt-in fail closed against a corrupted or
+ * hand-edited sync item. There is deliberately no dedicated setter for that flag
+ * that could bypass the validator.
  */
 export async function getSettings(): Promise<AppSettings> {
   await ensureMigrated();
@@ -361,9 +339,9 @@ export async function saveSettings(settings: Partial<AppSettings>): Promise<void
   });
 }
 
-// ─── Quota (FR-1.2) ───────────────────────────────────────────────────────────
+// ─── Quota ────────────────────────────────────────────────────────────────────
 
-/** Warn the user at this fill level, as required by FR-1.2. */
+/** Fill level at which the UI is required to warn the user. */
 export const SYNC_QUOTA_WARN_PERCENT = 80;
 
 const FALLBACK_QUOTA_BYTES = 102_400;
@@ -373,14 +351,10 @@ export interface SyncStorageUsage {
   quotaBytes: number;
   /** 0–100, rounded. */
   percent: number;
-  /** `true` once the FR-1.2 threshold is reached — render the warning. */
+  /** `true` at or above {@link SYNC_QUOTA_WARN_PERCENT} — render the warning. */
   warn: boolean;
 }
 
-/**
- * Current `chrome.storage.sync` utilisation.
- * Callers should render a warning while `warn === true` (FR-1.2).
- */
 export async function getStorageUsage(): Promise<SyncStorageUsage> {
   const quotaBytes = chrome.storage.sync.QUOTA_BYTES ?? FALLBACK_QUOTA_BYTES;
   let bytes = 0;
@@ -393,12 +367,11 @@ export async function getStorageUsage(): Promise<SyncStorageUsage> {
   return { bytes, quotaBytes, percent, warn: percent >= SYNC_QUOTA_WARN_PERCENT };
 }
 
-/** Convenience wrapper kept for existing callers. */
 export async function getStorageUsagePercent(): Promise<number> {
   return (await getStorageUsage()).percent;
 }
 
-// ─── Export / Import (FR-1.4) ─────────────────────────────────────────────────
+// ─── Export / Import ──────────────────────────────────────────────────────────
 
 export async function exportSyncData(): Promise<string> {
   const data = await readAll();
@@ -413,12 +386,11 @@ export interface ImportReport {
 }
 
 /**
- * Validate, migrate and install an exported dataset.
- *
- * Structural problems (`profiles` not an array, unknown `schemaVersion`, a file
- * from a newer build) throw {@link SyncValidationError}, whose `message` names
- * the offending path and is safe to render directly. Field-level problems are
- * repaired and returned as warnings — nothing reaches storage unvalidated.
+ * Validate, migrate and install an exported dataset. Structural problems
+ * (`profiles` not an array, unknown `schemaVersion`, a file from a newer build)
+ * throw {@link SyncValidationError}, whose `message` names the offending path and
+ * is safe to render directly. Field-level problems are repaired and returned as
+ * warnings — nothing reaches storage unvalidated.
  */
 export async function importSyncData(json: string): Promise<ImportReport> {
   let parsed: unknown;

@@ -1,14 +1,45 @@
+/**
+ * The LLM client.
+ *
+ * Named after Groq for historical reasons — the file is imported by name from
+ * several places and is not worth renaming — but nothing in it is
+ * Groq-specific any more. Every provider it talks to speaks the same
+ * OpenAI-compatible protocol, and *which* one is answered by
+ * {@link LlmEndpoint}, resolved from settings by the caller. See
+ * `shared/api/provider.ts` for why that indirection exists.
+ */
 import type { JobInfo, Profile } from '../types';
-import { API_ERROR_MESSAGES, MAX_CLASSIFY_FIELDS, type ApiErrorKind } from '../messages';
+import { apiErrorMessage, MAX_CLASSIFY_FIELDS, type ApiErrorKind } from '../messages';
 import { httpJson, HttpError } from './http';
+import {
+  chatCompletionsUrl,
+  keyProviderMismatch,
+  modelsUrl,
+  type LlmEndpoint,
+} from './provider';
+import {
+  buildFieldTemplatePrompt,
+  FIELD_TEMPLATE_SYSTEM_PROMPT,
+  validateFieldTemplates,
+} from './fieldTemplates';
+import type { ValueTemplate } from '../filler/valueTemplate';
 
-const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const TIMEOUT_MS = 15_000;
 
 export class GroqApiError extends Error {
   constructor(
     public readonly kind: ApiErrorKind,
     message: string,
+    /**
+     * The provider's own `error.message`, kept apart from the copy it was folded
+     * into.
+     *
+     * The same failure has to be phrased differently in the popup ("open
+     * Settings") and in Settings itself ("pick one from the list below"), so a
+     * caller that rewrites the sentence must be able to keep the one part it
+     * cannot write itself — what the provider actually said.
+     */
+    public readonly detail?: string,
   ) {
     super(message);
     this.name = 'GroqApiError';
@@ -25,62 +56,178 @@ interface ChatMessage {
 }
 
 interface ChatRequest {
-  apiKey: string;
-  model: string;
+  endpoint: LlmEndpoint;
   messages: ChatMessage[];
   maxTokens: number;
   temperature: number;
-  /** Ask Groq for `response_format: json_object`. */
+  /** Ask for `response_format: json_object`. */
   json?: boolean;
 }
 
-/** Map a transport failure onto the five FR-5.4 error states. */
-function toGroqError(err: unknown): GroqApiError {
-  if (err instanceof GroqApiError) return err;
-
-  if (err instanceof HttpError) {
-    let kind: ApiErrorKind;
-    switch (err.kind) {
-      case 'TIMEOUT':
-        kind = 'TIMEOUT';
-        break;
-      case 'UNAUTHORIZED':
-      case 'FORBIDDEN':
-        kind = 'UNAUTHORIZED';
-        break;
-      case 'RATE_LIMITED':
-        kind = 'RATE_LIMITED';
-        break;
-      default:
-        kind = 'NETWORK_ERROR';
-    }
-    return new GroqApiError(kind, API_ERROR_MESSAGES[kind]);
-  }
-
-  return new GroqApiError('NETWORK_ERROR', API_ERROR_MESSAGES.NETWORK_ERROR);
+/** Every provider here speaks the OpenAI error shape: `{"error":{"message":…}}`. */
+interface GroqErrorBody {
+  error?: { message?: unknown; code?: unknown; type?: unknown };
 }
 
 /**
- * The one place that talks to Groq. Every public function below is a prompt
+ * The two fields of an error body worth showing.
+ *
+ * Only *parsed* values are returned, never the raw body: an HTML error page or a
+ * proxy's plain-text complaint must not reach the UI, while `error.message` is a
+ * documented, human-written field — the same rule `shared/api/notion.ts` follows
+ * with `notionMessage`.
+ */
+function groqErrorBody(body?: string): { detail?: string; code?: string } {
+  if (!body) return {};
+  try {
+    const parsed = JSON.parse(body) as GroqErrorBody;
+    // Groq's longest real message — the decommissioning notice with its docs
+    // link — is ~230 characters; the cap is only there so a proxy that answers
+    // with prose cannot push a paragraph into an error banner.
+    const detail =
+      typeof parsed.error?.message === 'string' ? parsed.error.message.slice(0, 300) : undefined;
+    const code = typeof parsed.error?.code === 'string' ? parsed.error.code : undefined;
+    return { detail, code };
+  } catch {
+    return {};
+  }
+}
+
+/** `error.code` values that mean "this model", not "this request". */
+const MODEL_CODE = /model_decommissioned|model_not_found|model_terms_required|does_not_exist/i;
+/** Fallback when the provider sends prose but no code, e.g. "The model `x` does not exist". */
+const MODEL_TEXT = /\bmodel\b/i;
+
+function withDetail(base: string, provider: string, detail?: string): string {
+  return detail ? `${base} ${provider} said: ${detail}` : base;
+}
+
+function badModelMessage(provider: string, model?: string, detail?: string): string {
+  const subject = model
+    ? `${provider} does not serve the model “${model}”.`
+    : `${provider} does not serve the configured model.`;
+  return `${withDetail(subject, provider, detail)} Open Settings → API & Logging and pick one with “Check key”.`;
+}
+
+/**
+ * Map a transport failure onto the user-facing error states.
+ *
+ * The `default: NETWORK_ERROR` this replaces was the bug behind the first live
+ * run: `BAD_REQUEST` (a decommissioned model) and `NOT_FOUND` (a model id that
+ * never existed) both landed in it, so the user was told to check a connection
+ * that was working. The reason is in the response body — `HttpError` has
+ * carried it all along — and it is read here.
+ *
+ * The endpoint is threaded in from the call site because the error text is far
+ * more useful when it names the provider that refused and the model it refused.
+ */
+function toGroqError(err: unknown, endpoint?: LlmEndpoint): GroqApiError {
+  if (err instanceof GroqApiError) return err;
+  const provider = endpoint?.label ?? 'The AI provider';
+  const model = endpoint?.model;
+
+  if (!(err instanceof HttpError)) {
+    return new GroqApiError('NETWORK_ERROR', apiErrorMessage('NETWORK_ERROR', provider));
+  }
+
+  const { detail, code } = groqErrorBody(err.body);
+
+  switch (err.kind) {
+    case 'TIMEOUT':
+      return new GroqApiError('TIMEOUT', apiErrorMessage('TIMEOUT', provider));
+
+    case 'UNAUTHORIZED':
+    case 'FORBIDDEN':
+      return new GroqApiError(
+        'UNAUTHORIZED',
+        withDetail(apiErrorMessage('UNAUTHORIZED', provider), provider, detail),
+        detail,
+      );
+
+    case 'RATE_LIMITED':
+      return new GroqApiError(
+        'RATE_LIMITED',
+        withDetail(apiErrorMessage('RATE_LIMITED', provider), provider, detail),
+        detail,
+      );
+
+    // 404 on these two endpoints only ever means "no such model"; 400 means it
+    // once the provider's own code or message says so, and "bad request"
+    // otherwise.
+    case 'NOT_FOUND':
+    case 'BAD_REQUEST': {
+      const aboutModel =
+        err.kind === 'NOT_FOUND' || MODEL_CODE.test(code ?? '') || MODEL_TEXT.test(detail ?? '');
+      return aboutModel
+        ? new GroqApiError('BAD_MODEL', badModelMessage(provider, model, detail), detail)
+        : new GroqApiError(
+            'BAD_REQUEST',
+            withDetail(apiErrorMessage('BAD_REQUEST', provider), provider, detail),
+            detail,
+          );
+    }
+
+    // SERVER_ERROR / NETWORK_ERROR / BAD_RESPONSE: the provider is unreachable or
+    // broken, and there is nothing in Settings for the user to fix.
+    default:
+      return new GroqApiError('NETWORK_ERROR', apiErrorMessage('NETWORK_ERROR', provider));
+  }
+}
+
+/**
+ * Refuse before the request when the key belongs to somebody else.
+ *
+ * Two reasons, and the second is the stronger one:
+ *
+ *   1. the error it replaces ("Groq said: Invalid API Key") is unactionable, and
+ *      cost the first user of this extension an hour;
+ *   2. an API key is a credential. Posting an OpenRouter key to `api.groq.com`
+ *      hands a working secret to a company that was never meant to see it. That
+ *      is worth preventing even when the user would eventually notice.
+ *
+ * `WRONG_PROVIDER` is its own error kind because it is the one entry in the
+ * taxonomy that does not mean "something is broken": the key works, it is just
+ * addressed to the wrong company, and the fix is a dropdown rather than a new
+ * key.
+ */
+function assertKeyBelongsHere(endpoint: LlmEndpoint): void {
+  const mismatch = keyProviderMismatch(endpoint.providerId, endpoint.apiKey);
+  if (mismatch) throw new GroqApiError('WRONG_PROVIDER', mismatch);
+}
+
+function assertUsable(endpoint: LlmEndpoint): void {
+  if (!endpoint.apiKey) {
+    throw new GroqApiError('MISSING_KEY', apiErrorMessage('MISSING_KEY', endpoint.label));
+  }
+  if (!endpoint.baseUrl) {
+    throw new GroqApiError(
+      'BAD_REQUEST',
+      `No API URL is configured for ${endpoint.label}. Open Settings → API & Logging and add one.`,
+    );
+  }
+  assertKeyBelongsHere(endpoint);
+}
+
+/**
+ * The one place that talks to the model. Every public function below is a prompt
  * plus a parser on top of this call — timeout, auth and status handling are not
  * duplicated anywhere.
  */
 async function chatCompletion(req: ChatRequest): Promise<string> {
-  if (!req.apiKey) {
-    throw new GroqApiError('MISSING_KEY', API_ERROR_MESSAGES.MISSING_KEY);
-  }
+  assertUsable(req.endpoint);
 
   try {
-    const data = await httpJson<GroqResponse>(GROQ_API_URL, {
-      service: 'Groq',
+    const data = await httpJson<GroqResponse>(chatCompletionsUrl(req.endpoint.baseUrl), {
+      service: req.endpoint.label,
       method: 'POST',
       timeoutMs: TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${req.apiKey}`,
+        Authorization: `Bearer ${req.endpoint.apiKey}`,
+        ...req.endpoint.headers,
       },
       body: JSON.stringify({
-        model: req.model,
+        model: req.endpoint.model,
         messages: req.messages,
         max_tokens: req.maxTokens,
         temperature: req.temperature,
@@ -90,15 +237,78 @@ async function chatCompletion(req: ChatRequest): Promise<string> {
 
     return data.choices[0]?.message?.content?.trim() ?? '';
   } catch (err) {
-    throw toGroqError(err);
+    throw toGroqError(err, req.endpoint);
   }
+}
+
+// ─── Diagnostics (“Check key” in Settings) ────────────────────────────────────
+
+/** Shape of `GET /models` — only the id is read. */
+interface GroqModelList {
+  data?: Array<{ id?: unknown }>;
+}
+
+/**
+ * Every model id `GET /models` reports, alphabetical.
+ *
+ * Doubles as the cheapest possible key test: the endpoint needs no body, costs
+ * no tokens, and answers 401 for a key the provider does not recognise — which
+ * is what lets the caller state "the key is fine, the model is not" instead of
+ * guessing.
+ *
+ * What the list *means* differs per provider: Groq and OpenAI answer with the
+ * models this key may use, OpenRouter and Together with their whole catalogue.
+ * That distinction is `Provider.catalogue`, and it belongs to the UI — this
+ * function reports what it was told, unfiltered.
+ */
+export async function listModels(endpoint: LlmEndpoint): Promise<string[]> {
+  if (!endpoint.apiKey) {
+    throw new GroqApiError('MISSING_KEY', apiErrorMessage('MISSING_KEY', endpoint.label));
+  }
+  if (!endpoint.baseUrl) {
+    throw new GroqApiError(
+      'BAD_REQUEST',
+      `No API URL is configured for ${endpoint.label}. Open Settings → API & Logging and add one.`,
+    );
+  }
+  assertKeyBelongsHere(endpoint);
+
+  try {
+    const data = await httpJson<GroqModelList>(modelsUrl(endpoint.baseUrl), {
+      service: endpoint.label,
+      timeoutMs: TIMEOUT_MS,
+      headers: { Authorization: `Bearer ${endpoint.apiKey}`, ...endpoint.headers },
+    });
+    return (data.data ?? [])
+      .map((m) => (typeof m.id === 'string' ? m.id : ''))
+      .filter((id) => id.length > 0)
+      .sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    throw toGroqError(err, endpoint);
+  }
+}
+
+/**
+ * Ask the configured model for one token.
+ *
+ * Deliberately routed through {@link chatCompletion}: a check that used a
+ * different request builder could pass while filling still failed. A retired
+ * model is refused here exactly as it is during a fill — same URL, same headers,
+ * same error translation — for a request that costs a single token.
+ */
+export async function probeModel(endpoint: LlmEndpoint): Promise<void> {
+  await chatCompletion({
+    endpoint,
+    messages: [{ role: 'user', content: 'ping' }],
+    maxTokens: 1,
+    temperature: 0,
+  });
 }
 
 export async function generateMotivation(
   jobInfo: JobInfo,
   profile: Profile,
-  apiKey: string,
-  model: string,
+  endpoint: LlmEndpoint,
 ): Promise<string> {
   const language = detectLanguage(jobInfo.description);
 
@@ -116,8 +326,7 @@ Skills: (derived from profile summary above)
 Write a motivation paragraph.`;
 
   return chatCompletion({
-    apiKey,
-    model,
+    endpoint,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
@@ -127,91 +336,50 @@ Write a motivation paragraph.`;
   });
 }
 
-/** Field types the classifier is allowed to return (FR-5.3 schema). */
-export const CLASSIFIABLE_FIELD_TYPES = [
-  'firstName',
-  'lastName',
-  'fullName',
-  'email',
-  'phone',
-  'linkedin',
-  'github',
-  'website',
-  'salary',
-  'city',
-  'coverLetter',
-  'availability',
-  'workPermit',
-  'about',
-  'unknown',
-] as const;
-
-const FIELD_TYPE_SET: ReadonlySet<string> = new Set(CLASSIFIABLE_FIELD_TYPES);
-
 /**
- * Validate the model's JSON against the FR-5.3 schema: keys must be indices of
- * the submitted fingerprints, values must be known field types. Anything else is
- * dropped, so a hallucinated response leaves fields unclassified instead of
- * mislabelling them.
- */
-export function validateClassification(
-  raw: unknown,
-  fingerprintCount: number,
-): Record<string, string> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
-
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    const index = Number(key);
-    if (!Number.isInteger(index) || index < 0 || index >= fingerprintCount) continue;
-    if (typeof value !== 'string') continue;
-    if (!FIELD_TYPE_SET.has(value)) continue;
-    if (value === 'unknown') continue;
-    out[String(index)] = value;
-  }
-  return out;
-}
-
-/**
- * Classify field fingerprints via LLM — optional feature flag (FR-5.3).
- * Sends only serialized fingerprint strings — no user data (S-3).
+ * Ask the model what belongs in the fields the heuristics could not name, and
+ * get back a *value template* per field.
+ *
+ * Sends only serialized fingerprints — no user data, and since the answer names
+ * profile atoms rather than carrying values, none is needed. The contract, the
+ * prompt and every validation rule live in `./fieldTemplates.ts`.
  *
  * This is the egress point, so the {@link MAX_CLASSIFY_FIELDS} cap is applied
  * here as well as at the call site: a caller that ignores it cannot make this
  * function put a hundred fields on the wire, and the indices the model answers
- * with are validated against the *truncated* batch, never the original one.
+ * with are validated against the *truncated* batch, never the original.
  *
- * Returns a map of `"<fingerprint index>" → field type`; unclassifiable or
- * schema-violating entries are simply absent.
+ * Every failure, a missing key included, returns `{}` rather than throwing —
+ * see `handleClassifyFields` for why this path stays silent.
  */
-export async function classifyFields(
+export async function planFieldTemplates(
   fingerprints: string[],
-  apiKey: string,
-  model: string,
-): Promise<Record<string, string>> {
+  endpoint: LlmEndpoint,
+): Promise<Record<string, ValueTemplate>> {
   const batch = fingerprints.slice(0, MAX_CLASSIFY_FIELDS);
   if (batch.length === 0) return {};
-
-  const prompt = `You are a JSON API. Classify each HTML form field fingerprint by type.
-Field types: ${CLASSIFIABLE_FIELD_TYPES.join(', ')}.
-Respond ONLY with a JSON object mapping each fingerprint index to its type.
-
-Fingerprints:
-${batch.map((f, i) => `${i}: "${f}"`).join('\n')}`;
+  if (!endpoint.apiKey || !endpoint.baseUrl) return {};
+  if (keyProviderMismatch(endpoint.providerId, endpoint.apiKey)) return {};
 
   const raw = await chatCompletion({
-    apiKey,
-    model,
-    messages: [{ role: 'user', content: prompt }],
-    maxTokens: 500,
+    endpoint,
+    messages: [
+      { role: 'system', content: FIELD_TEMPLATE_SYSTEM_PROMPT },
+      { role: 'user', content: buildFieldTemplatePrompt(batch) },
+    ],
+    // Templates are longer than the type names this used to return: a full batch
+    // of 40 costs ≈ 700 tokens of JSON. The budget is deliberately well clear of
+    // that, because a truncated reply is invalid JSON and loses the *whole*
+    // batch rather than one field.
+    maxTokens: 1200,
     temperature: 0,
     json: true,
   });
 
   try {
-    return validateClassification(JSON.parse(raw || '{}'), batch.length);
+    return validateFieldTemplates(JSON.parse(raw || '{}'), batch);
   } catch {
-    // Invalid JSON → fields remain unclassified (FR-5.3)
+    // Invalid JSON → fields stay as the heuristics left them.
     return {};
   }
 }
@@ -223,17 +391,18 @@ function detectLanguage(text?: string): string {
 }
 
 /**
- * Generate answers to open-ended job application questions (FR-5.2 extension).
- * Returns an array of answer strings aligned with the input questions array.
+ * Generate answers to open-ended job application questions. Returns an array of
+ * answer strings aligned with the input questions array.
  */
 export async function answerOpenQuestions(
   questions: string[],
   profile: Profile,
   jobInfo: JobInfo,
-  apiKey: string,
-  model: string,
+  endpoint: LlmEndpoint,
 ): Promise<string[]> {
-  if (!apiKey) throw new GroqApiError('MISSING_KEY', API_ERROR_MESSAGES.MISSING_KEY);
+  if (!endpoint.apiKey) {
+    throw new GroqApiError('MISSING_KEY', apiErrorMessage('MISSING_KEY', endpoint.label));
+  }
   if (questions.length === 0) return [];
 
   const language = detectLanguage(jobInfo.description ?? questions.join(' '));
@@ -252,8 +421,7 @@ ${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}
 Respond with a JSON array: ["answer to q1", "answer to q2", ...]`;
 
   const raw = await chatCompletion({
-    apiKey,
-    model,
+    endpoint,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
@@ -264,7 +432,7 @@ Respond with a JSON array: ["answer to q1", "answer to q2", ...]`;
   });
 
   try {
-    // Groq json_object mode wraps arrays — handle both {"answers": [...]} and [...]
+    // json_object mode wraps arrays — handle both {"answers": [...]} and [...]
     const parsed: unknown = JSON.parse(raw || '[]');
     const arr: unknown[] = Array.isArray(parsed)
       ? parsed

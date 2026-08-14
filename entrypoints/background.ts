@@ -1,16 +1,19 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import {
   generateMotivation,
-  classifyFields,
+  planFieldTemplates,
   answerOpenQuestions,
+  listModels,
+  probeModel,
   GroqApiError,
 } from '../shared/api/groq';
+import { buildEndpoint, keyProviderMismatch, providerOf } from '../shared/api/provider';
 import { logToNotion, inspectNotionDatabase, clearNotionSchemaCache } from '../shared/api/notion';
 import { logToSheets } from '../shared/api/sheets';
 import { RemoteLogError, toRemoteLogError } from '../shared/api/remoteLog';
 import {
-  getGroqApiKey,
   getGroqModel,
+  getLlmEndpoint,
   getNotionCredentials,
   getSheetsEndpoint,
   appendLogEntry,
@@ -29,16 +32,20 @@ import {
 import { getSettings, getProfiles } from '../shared/storage/sync';
 import {
   API_ERROR_MESSAGES,
+  apiErrorMessage,
   REMOTE_LOG_ERROR_MESSAGES,
   type ApiErrorKind,
   type BackgroundResponse,
   type FromBackgroundMessage,
+  type GroqCheckReport,
   type OpenQuestion,
   type ToBackgroundMessage,
 } from '../shared/messages';
 import { createApplicationEntry } from '../shared/types';
 import type { ApplicationEntry, FillSummary, JobInfo, NewApplicationInput } from '../shared/types';
 import { fillAllFrames, fillFailureMessage } from './ui/frames';
+import { maskApiKey } from './ui/groqConnection';
+import { pageKey, writeLastFill, clearLastFill } from './ui/lastFill';
 
 const RETRY_ALARM = 'jobfill:remote-log-retry';
 
@@ -65,10 +72,7 @@ export default defineBackground(() => {
         return true;
 
       case 'CLASSIFY_FIELDS':
-        run(handleClassifyFields(message.fingerprints), respond, () => ({
-          type: 'CLASSIFY_RESULT',
-          classifications: {},
-        }));
+        run(handleClassifyFields(message.fingerprints), respond, () => NO_TEMPLATES);
         return true;
 
       case 'INSPECT_NOTION':
@@ -76,6 +80,14 @@ export default defineBackground(() => {
           type: 'NOTION_SCHEMA_ERROR',
           kind: 'NETWORK_ERROR',
           message: REMOTE_LOG_ERROR_MESSAGES.NETWORK_ERROR,
+        }));
+        return true;
+
+      case 'CHECK_GROQ':
+        run(handleCheckGroq(message), respond, () => ({
+          type: 'GROQ_CHECK_ERROR',
+          kind: 'NETWORK_ERROR',
+          message: API_ERROR_MESSAGES.NETWORK_ERROR,
         }));
         return true;
 
@@ -96,16 +108,16 @@ export default defineBackground(() => {
     }
   });
 
-  // FR-2.4 — the Alt+Shift+F shortcut declared in the manifest. Without this
-  // listener the entry in chrome://extensions/shortcuts did nothing at all,
-  // which is a Web Store review finding on its own.
+  // The Alt+Shift+F shortcut declared in the manifest. Without this listener the
+  // entry in chrome://extensions/shortcuts did nothing at all, which is a Web
+  // Store review finding on its own.
   chrome.commands?.onCommand.addListener((command) => {
     if (command === FILL_COMMAND) void handleFillCommand();
   });
 
-  // Durable retry driver (FR-6.3 + NFR-5). `chrome.alarms` is the only timer that
-  // outlives service-worker eviction; without the `alarms` permission the object
-  // is undefined and we fall back to a best-effort in-session timer.
+  // `chrome.alarms` is the only timer that outlives service-worker eviction;
+  // without the `alarms` permission the object is undefined and we fall back to
+  // a best-effort in-session timer.
   chrome.alarms?.onAlarm.addListener((alarm) => {
     if (alarm.name === RETRY_ALARM) void drainRetryQueue();
   });
@@ -144,13 +156,21 @@ function logFailure(): BackgroundResponse<'LOG_RESULT'> {
   };
 }
 
-/** Groq errors already carry FR-5.4 copy; anything else is a network failure. */
+/** Groq errors already carry user-facing copy; anything else is a network failure. */
 function toApiError(err: unknown): BackgroundResponse<'API_ERROR'> {
-  if (err instanceof GroqApiError) return apiError(err.kind, err.message);
-  return apiError('NETWORK_ERROR');
+  const { kind, message } = toGroqFailure(err);
+  return apiError(kind, message);
 }
 
-// ─── Keyboard shortcut (FR-2.4) ───────────────────────────────────────────────
+/** `{ kind, message, detail }` of anything thrown by the Groq client, UI-ready. */
+function toGroqFailure(err: unknown): { kind: ApiErrorKind; message: string; detail?: string } {
+  if (err instanceof GroqApiError) {
+    return { kind: err.kind, message: err.message, detail: err.detail };
+  }
+  return { kind: 'NETWORK_ERROR', message: API_ERROR_MESSAGES.NETWORK_ERROR };
+}
+
+// ─── Keyboard shortcut ────────────────────────────────────────────────────────
 
 /** How long the result stays on the toolbar icon. */
 const BADGE_MS = 8000;
@@ -161,21 +181,16 @@ const BADGE_ERROR = '#c22626';
 const WEB_PAGE = /^https?:/i;
 
 /**
- * Alt+Shift+F. The shortcut goes through the same broadcast-and-collect path as
- * the popup (P0-5), because the form is just as likely to live in an iframe.
+ * Alt+Shift+F. Goes through the same broadcast-and-collect path as the popup,
+ * because the form is just as likely to live in an iframe.
  *
  * Feedback is the hard part: a shortcut does not open the popup, so there is no
- * surface to render the summary on. Two channels answer it:
- *   1. the page itself — every filled field is highlighted for
- *      `highlightDurationMs` by `fillPage`, so a successful fill is visible
- *      where the user is already looking;
- *   2. the toolbar icon — a per-tab badge with the number of filled fields and
- *      a tooltip with the breakdown, which is the only thing that can also say
- *      "nothing matched" or "no profile".
- *
- * The content script's on-page toast is deliberately *not* used: it is wired to
- * the inline button inside `content.ts` and is not reachable from the worker
- * without a new message type on that side.
+ * surface to render a summary on. Two channels answer it — the page itself,
+ * where `fillPage` highlights every filled field for `highlightDurationMs`, and
+ * the toolbar icon, whose per-tab badge and tooltip are the only thing that can
+ * also say "nothing matched" or "no profile". The content script's toast is not
+ * used: it is wired to the inline button and is unreachable from the worker
+ * without a new message type.
  */
 async function handleFillCommand(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -189,9 +204,25 @@ async function handleFillCommand(): Promise<void> {
   const outcome = await fillAllFrames(tab.id, '__active__');
 
   if (outcome.answered === 0) {
+    await clearLastFill(tab.id);
     flashBadge(tab.id, '!', BADGE_ERROR, `JobFill — ${fillFailureMessage(outcome)}`);
     return;
   }
+
+  // The shortcut fills without opening the popup, so until this existed a
+  // keyboard fill could never be logged: the popup opened later found no
+  // summary, and "Log this application" only appears once there is one. The
+  // record is the same one the popup writes, so both paths lead to the button.
+  await writeLastFill(tab.id, {
+    page: pageKey(tab.url),
+    at: Date.now(),
+    summary: outcome.summary,
+    openQuestions: outcome.openQuestions,
+    formFrameId: outcome.primaryFrameId,
+    jobInfo: null,
+    generatedText: '',
+    logNotice: null,
+  });
 
   const filled = outcome.summary.high + outcome.summary.medium;
   flashBadge(tab.id, String(filled), filled > 0 ? BADGE_OK : BADGE_ERROR, fillTitle(outcome.summary));
@@ -239,8 +270,8 @@ async function handleGenerateCover(
   jobInfo: JobInfo,
   profileId: string,
 ): Promise<FromBackgroundMessage> {
-  const apiKey = await getGroqApiKey();
-  if (!apiKey) return apiError('MISSING_KEY');
+  const endpoint = await getLlmEndpoint();
+  if (!endpoint.apiKey) return apiError('MISSING_KEY', apiErrorMessage('MISSING_KEY', endpoint.label));
 
   const profile = (await getProfiles()).find((p) => p.id === profileId);
   if (!profile) {
@@ -248,7 +279,7 @@ async function handleGenerateCover(
   }
 
   try {
-    const text = await generateMotivation(jobInfo, profile, apiKey, await getGroqModel());
+    const text = await generateMotivation(jobInfo, profile, endpoint);
     return { type: 'GENERATION_RESULT', text };
   } catch (err) {
     return toApiError(err);
@@ -260,8 +291,8 @@ async function handleAnswerQuestions(
   profileId: string,
   jobInfo: JobInfo,
 ): Promise<FromBackgroundMessage> {
-  const apiKey = await getGroqApiKey();
-  if (!apiKey) return apiError('MISSING_KEY');
+  const endpoint = await getLlmEndpoint();
+  if (!endpoint.apiKey) return apiError('MISSING_KEY', apiErrorMessage('MISSING_KEY', endpoint.label));
 
   const profile = (await getProfiles()).find((p) => p.id === profileId);
   if (!profile) {
@@ -273,8 +304,7 @@ async function handleAnswerQuestions(
       questions.map((q) => q.text),
       profile,
       jobInfo,
-      apiKey,
-      await getGroqModel(),
+      endpoint,
     );
 
     const answers: Record<string, string> = {};
@@ -288,41 +318,43 @@ async function handleAnswerQuestions(
   }
 }
 
-const NO_CLASSIFICATIONS: BackgroundResponse<'CLASSIFY_RESULT'> = {
+const NO_TEMPLATES: BackgroundResponse<'CLASSIFY_RESULT'> = {
   type: 'CLASSIFY_RESULT',
-  classifications: {},
+  templates: {},
 };
 
 /**
- * FR-5.3 — optional LLM classification of low-confidence fields.
+ * Optional LLM pass over the fields the heuristics could not name.
  *
  * The opt-in is re-checked *here*, not only in the content script that asked:
  * this is the context that owns the API key and makes the request, so it is the
- * only place where "off means no egress" can actually be guaranteed.
+ * only place where "off means no egress" can be guaranteed.
  *
- * Failures are intentionally silent — no key, feature off, transport error,
- * unparseable answer all return an empty map, and the caller keeps its
- * heuristic result. FR-5.4's "no silent failures" governs the paths the user
- * explicitly asked for (generate, answer); this one is an unattended background
- * pass over fields nothing was written into, and an error toast for it would be
- * noise about a feature the user never invoked.
+ * What comes back is a value *template* per field (`"{firstName} {lastName}"`),
+ * not a field type. The worker neither resolves nor inspects it: it holds no
+ * profile, and substitution belongs in the page.
+ *
+ * Failures are intentionally silent — no key, feature off, transport error and
+ * unparseable answer all return an empty map, and the caller keeps its heuristic
+ * result. The rule against silent failures governs paths the user explicitly
+ * asked for (generate, answer); this is an unattended pass over fields nothing
+ * was written into, so a toast would be noise about a feature never invoked.
  */
 async function handleClassifyFields(fingerprints: string[]): Promise<FromBackgroundMessage> {
   const { llmFieldClassification } = await getSettings();
-  if (!llmFieldClassification || fingerprints.length === 0) return NO_CLASSIFICATIONS;
+  if (!llmFieldClassification || fingerprints.length === 0) return NO_TEMPLATES;
 
-  const apiKey = await getGroqApiKey();
-  if (!apiKey) return NO_CLASSIFICATIONS;
+  const endpoint = await getLlmEndpoint();
+  if (!endpoint.apiKey) return NO_TEMPLATES;
 
   try {
-    const classifications = await classifyFields(fingerprints, apiKey, await getGroqModel());
-    return { type: 'CLASSIFY_RESULT', classifications };
+    return { type: 'CLASSIFY_RESULT', templates: await planFieldTemplates(fingerprints, endpoint) };
   } catch {
-    return NO_CLASSIFICATIONS;
+    return NO_TEMPLATES;
   }
 }
 
-// ─── Notion setup check (P1-13) ───────────────────────────────────────────────
+// ─── Notion setup check ───────────────────────────────────────────────────────
 
 /**
  * Read a Notion database's schema on behalf of the options page.
@@ -347,7 +379,152 @@ async function handleInspectNotion(
   }
 }
 
-// ─── Application logging (FR-6.1 … FR-6.3) ────────────────────────────────────
+// ─── Groq setup check ─────────────────────────────────────────────────────────
+
+/**
+ * "Check key" — the LLM counterpart of {@link handleInspectNotion}.
+ *
+ * The first live run produced "Groq API key is invalid or expired" and left the
+ * user unable to tell which of three independent things was wrong: the key was
+ * never saved, the key is rejected, or the model no longer exists. The check
+ * answers them in that order and stops at the first "no":
+ *
+ *   1. no key at all        → `MISSING_KEY`, no request is made;
+ *   2. `GET /v1/models`     → 401 here, and only here, means "bad key"; it also
+ *                             yields the list the Model field needs;
+ *   3. one-token completion → the *only* way to learn that a listed model is
+ *                             decommissioned, since that answer is a 400 on the
+ *                             completions endpoint and nothing else.
+ *
+ * A failure at step 3 is reported as a *result*, not an error: the key works,
+ * which is worth stating on its own, and the model list is what the user needs
+ * next.
+ */
+async function handleCheckGroq(
+  message: Extract<ToBackgroundMessage, { type: 'CHECK_GROQ' }>,
+): Promise<FromBackgroundMessage> {
+  const key = message.apiKey.trim();
+  if (!key) {
+    return {
+      type: 'GROQ_CHECK_ERROR',
+      kind: 'MISSING_KEY',
+      message: 'There is no API key to check. Paste one in the field above, then press “Check key”.',
+    };
+  }
+
+  // An empty Model field means "whatever JobFill would use", which is the stored
+  // value or the provider's default — the check must never probe something else.
+  const endpoint = buildEndpoint({
+    providerId: message.provider,
+    apiKey: key,
+    model: message.model.trim() || (await getGroqModel()),
+    customBaseUrl: message.baseUrl,
+  });
+
+  // Answered without a request, and before one could do any harm: a key that
+  // belongs to a different company must not be posted to this one.
+  const mismatch = keyProviderMismatch(endpoint.providerId, key);
+  if (mismatch) {
+    return { type: 'GROQ_CHECK_ERROR', kind: 'WRONG_PROVIDER', message: mismatch };
+  }
+
+  let models: string[];
+  try {
+    models = await listModels(endpoint);
+  } catch (err) {
+    const { kind, message: copy, detail } = toGroqFailure(err);
+    return { type: 'GROQ_CHECK_ERROR', kind, message: copy, ...(detail ? { detail } : {}) };
+  }
+
+  const report: GroqCheckReport = {
+    keyHint: maskApiKey(key),
+    provider: endpoint.label,
+    model: endpoint.model,
+    modelOk: false,
+    modelCount: models.length,
+    ...offeredModels(endpoint.providerId, endpoint.model, models),
+  };
+
+  try {
+    await probeModel(endpoint);
+    return { type: 'GROQ_CHECK_RESULT', report: { ...report, modelOk: true } };
+  } catch (err) {
+    const { kind, message: copy, detail } = toGroqFailure(err);
+    return {
+      type: 'GROQ_CHECK_RESULT',
+      report: {
+        ...report,
+        modelOk: false,
+        modelProblem: modelProblemCopy(kind, copy, detail, endpoint.model, endpoint.label),
+        modelProblemKind: kind,
+      },
+    };
+  }
+}
+
+/** How many catalogue entries are worth putting on screen as suggestions. */
+const MAX_MODEL_SUGGESTIONS = 8;
+
+/**
+ * Which model ids the Settings card should offer.
+ *
+ * Groq and OpenAI answer `GET /models` with what this key may use — a couple of
+ * dozen valid choices, all worth offering. OpenRouter answers with its whole
+ * catalogue: several hundred ids with nothing to do with this key, which as
+ * pills is not a list but a wall, burying the one thing the user came to learn.
+ * So for a catalogue provider the answer is used the other way round — to
+ * *verify* the configured id and offer a handful of near matches — and the full
+ * catalogue gets a link instead of a render.
+ */
+function offeredModels(
+  providerId: string,
+  model: string,
+  models: string[],
+): Pick<GroqCheckReport, 'models' | 'modelsAreCatalogue' | 'modelsPageUrl'> {
+  const provider = providerOf(providerId);
+  if (provider.catalogue === 'account') return { models };
+
+  // Search on the distinctive words of what the user typed: "meta-llama/llama-3.3"
+  // finds the vendor's other 3.3 builds, which is what someone with a wrong id
+  // usually needs.
+  const terms = model
+    .toLowerCase()
+    .split(/[^a-z0-9.]+/)
+    .filter((t) => t.length >= 3);
+  const related = models.filter((id) => {
+    const lower = id.toLowerCase();
+    return terms.some((t) => lower.includes(t));
+  });
+
+  return {
+    models: (related.length > 0 ? related : models).slice(0, MAX_MODEL_SUGGESTIONS),
+    modelsAreCatalogue: true,
+    ...(provider.modelsPageUrl ? { modelsPageUrl: provider.modelsPageUrl } : {}),
+  };
+}
+
+/**
+ * Re-word a failed model probe for the page it is displayed on.
+ *
+ * `API_ERROR_MESSAGES` is written for the popup, where the only possible advice
+ * is "open Settings". Here the user *is* in Settings, has just pressed the
+ * button, and the list of models they can switch to is rendered directly below —
+ * so repeating "open Settings and pick one" would be both wrong and useless.
+ * Groq's own words are kept, because they are the part we cannot write.
+ */
+function modelProblemCopy(
+  kind: ApiErrorKind,
+  message: string,
+  detail: string | undefined,
+  model: string,
+  provider: string,
+): string {
+  if (kind !== 'BAD_MODEL') return message;
+  const said = detail ? ` ${provider} said: ${detail}` : '';
+  return `${provider} refused “${model}”.${said} Pick a model from the list below, then save.`;
+}
+
+// ─── Application logging ──────────────────────────────────────────────────────
 
 /**
  * Which backend is configured. `null` means "logging is off" — a valid,
@@ -401,13 +578,13 @@ async function sendToBackend(backend: RetryBackend, entry: ApplicationEntry): Pr
 }
 
 /**
- * FR-6.1 — create the journal entry; FR-6.3 — local copy first, then remote with
- * exactly one retry.
+ * Create the journal entry: local copy first, then remote with exactly one
+ * retry.
  *
  * The response is sent as soon as the *local* write and the first remote attempt
- * are done: a slow or failing backend never blocks the UI. When the first attempt
- * fails with a transport-level error the entry stays `pending` and the retry is
- * handed to the alarm-driven queue.
+ * are done, so a slow or failing backend never blocks the UI. When that attempt
+ * fails at transport level the entry stays `pending` and the retry is handed to
+ * the alarm-driven queue.
  */
 async function handleLogApplication(input: NewApplicationInput): Promise<FromBackgroundMessage> {
   // Opportunistic: a worker woken by any message also drains overdue retries,
@@ -426,7 +603,7 @@ async function handleLogApplication(input: NewApplicationInput): Promise<FromBac
     remoteSync: backend ? 'pending' : configError ? 'failed' : 'off',
   });
 
-  // FR-6.3: the local copy is written regardless of backend availability.
+  // The local copy is written regardless of backend availability.
   await appendLogEntry(entry);
 
   if (configError) {
@@ -470,7 +647,7 @@ function logResult(
 ): BackgroundResponse<'LOG_RESULT'> {
   return {
     type: 'LOG_RESULT',
-    success: true, // the local copy exists — that is what FR-6.3 guarantees
+    success: true, // the local copy exists — that is the whole guarantee
     entry: { ...entry, remoteSync },
     remoteSync,
     ...(message ? { message } : {}),
@@ -518,7 +695,7 @@ async function runTask(task: RemoteLogTask): Promise<void> {
     const attempts = task.attempts + 1;
 
     if (attempts >= MAX_ATTEMPTS || !error.retryable) {
-      // FR-6.3: one retry, then surface non-blockingly via the entry status.
+      // One retry, then surface non-blockingly via the entry status.
       await updateLogEntrySync(task.entryId, 'failed');
       await removeRetry(task.entryId);
       console.warn('[JobFill] remote log gave up after', attempts, 'attempts:', error.message);

@@ -13,17 +13,41 @@ import {
 } from '../shared/api/notion';
 import { logToSheets, validateSheetsEndpoint } from '../shared/api/sheets';
 import {
-  classifyFields,
+  answerOpenQuestions,
+  listModels,
+  planFieldTemplates,
+  probeModel,
   generateMotivation,
-  validateClassification,
   GroqApiError,
 } from '../shared/api/groq';
-import { createApplicationEntry, createEmptyProfile } from '../shared/types';
-import { MAX_CLASSIFY_FIELDS } from '../shared/messages';
+import {
+  refusalReason,
+  toValueTemplate,
+  validateFieldTemplates,
+} from '../shared/api/fieldTemplates';
+import {
+  buildEndpoint,
+  identifyKeyOrigin,
+  keyProviderMismatch,
+  normalizeBaseUrl,
+  originPattern,
+  providerOf,
+  validateBaseUrl,
+  PROVIDERS,
+  PROVIDER_IDS,
+  type LlmEndpoint,
+} from '../shared/api/provider';
+import { resolveTemplate } from '../shared/filler/valueTemplate';
+import { createApplicationEntry, createEmptyProfile, LLM_FIELD_CONFIDENCE } from '../shared/types';
+import type { LlmFieldConfidence } from '../shared/types';
+import { MAX_CLASSIFY_FIELDS, type FromBackgroundMessage } from '../shared/messages';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const groqEndpoint: LlmEndpoint = buildEndpoint({
+  providerId: 'groq',
+  apiKey: 'key',
+  model: 'model',
+});
 
-/** Capture the rejection value of a promise with a precise type. */
 async function rejection<T>(promise: Promise<unknown>): Promise<T> {
   let caught: unknown;
   let resolved = false;
@@ -46,6 +70,28 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
 
 function textResponse(body: string, status = 200, contentType = 'text/html'): Response {
   return new Response(body, { status, headers: { 'content-type': contentType } });
+}
+
+/**
+ * Two things `new Response` will not do: omit `Content-Type` entirely (it
+ * invents `text/plain` for a string body), and fail while the body is being
+ * read. Both are states a proxy or a dropped connection can produce, and both
+ * have a `??` / `.catch()` in the code that nothing else would exercise.
+ */
+function fakeResponse(init: {
+  ok: boolean;
+  status: number;
+  contentType?: string;
+  text?: () => Promise<string>;
+}): Response {
+  const headers = new Headers();
+  if (init.contentType) headers.set('content-type', init.contentType);
+  return {
+    ok: init.ok,
+    status: init.status,
+    headers,
+    text: init.text ?? (() => Promise.resolve('')),
+  } as unknown as Response;
 }
 
 const entry = createApplicationEntry({
@@ -157,7 +203,7 @@ describe('toRemoteLogError', () => {
   });
 });
 
-// ─── notion.ts — schema discovery (P1-13) ─────────────────────────────────────
+// ─── notion.ts — schema discovery ─────────────────────────────────────────────
 
 const canonicalProps: NotionPropertyInfo[] = [
   { name: 'Name', type: 'title' },
@@ -325,7 +371,7 @@ describe('logToNotion', () => {
   });
 });
 
-// ─── sheets.ts (P0-7) ─────────────────────────────────────────────────────────
+// ─── sheets.ts ────────────────────────────────────────────────────────────────
 
 describe('validateSheetsEndpoint', () => {
   it('accepts a proper Apps Script deployment URL', () => {
@@ -354,7 +400,7 @@ describe('logToSheets', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(endpoint);
     expect(init.method).toBe('POST');
-    // Apps Script always 302s to script.googleusercontent.com (P0-7).
+    // Apps Script always 302s to script.googleusercontent.com.
     expect(init.redirect).toBe('follow');
     expect(JSON.parse(init.body as string)).toMatchObject({ id: entry.id, company: 'ACME' });
   });
@@ -397,7 +443,7 @@ describe('Groq error mapping (FR-5.4)', () => {
   const profile = createEmptyProfile({ firstName: 'Ada', about: 'Engineer' });
 
   it('rejects a missing key before touching the network', async () => {
-    const err = await rejection<GroqApiError>(generateMotivation({}, profile, '', 'model'));
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, { ...groqEndpoint, apiKey: '' }));
     expect(err.kind).toBe('MISSING_KEY');
     expect(err.message).toMatch(/Settings/);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -405,14 +451,14 @@ describe('Groq error mapping (FR-5.4)', () => {
 
   it('maps 401 / 429 / 5xx onto distinct, actionable messages', async () => {
     const cases: Array<[number, string, RegExp]> = [
-      [401, 'UNAUTHORIZED', /invalid or expired/i],
-      [429, 'RATE_LIMITED', /rate limit/i],
+      [401, 'UNAUTHORIZED', /rejected the API key/i],
+      [429, 'RATE_LIMITED', /rate[- ]limit/i],
       [500, 'NETWORK_ERROR', /network error/i],
     ];
 
     for (const [status, kind, copy] of cases) {
       fetchMock.mockResolvedValueOnce(textResponse('RAW_BACKEND_TEXT', status, 'text/plain'));
-      const err = await rejection<GroqApiError>(generateMotivation({}, profile, 'key', 'model'));
+      const err = await rejection<GroqApiError>(generateMotivation({}, profile, groqEndpoint));
       expect(err.kind).toBe(kind);
       expect(err.message).toMatch(copy);
       // Raw backend text must never leak into the UI (the old code used String(err)).
@@ -424,83 +470,230 @@ describe('Groq error mapping (FR-5.4)', () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ choices: [{ message: { content: '  Hello there.  ' } }] }),
     );
-    await expect(generateMotivation({}, profile, 'key', 'model')).resolves.toBe('Hello there.');
+    await expect(generateMotivation({}, profile, groqEndpoint)).resolves.toBe('Hello there.');
   });
 });
 
-describe('validateClassification (FR-5.3)', () => {
-  it('keeps well-formed pairs', () => {
-    expect(validateClassification({ '0': 'email', '1': 'firstName' }, 2)).toEqual({
-      '0': 'email',
-      '1': 'firstName',
+describe('value templates — the FR-5.3 answer contract', () => {
+  const profile = createEmptyProfile({
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    email: 'ada@example.com',
+    salaryExpectation: '80000 CZK',
+    availability: 'From 1 March',
+  });
+  const ctx = { profile };
+  /** A fingerprint with no signal in it — every rule below is off by default. */
+  const plain = ['|preferred_name||preferred name||Preferred name|||'];
+
+  it('accepts a composition, which is the whole reason templates exist', () => {
+    expect(validateFieldTemplates({ '0': '{firstName} {lastName}' }, plain)).toEqual({
+      '0': '{firstName} {lastName}',
     });
+    expect(resolveTemplate('{firstName} {lastName}', ctx)).toBe('Ada Lovelace');
+    expect(resolveTemplate('{lastName}, {firstName}', ctx)).toBe('Lovelace, Ada');
   });
 
-  it('drops out-of-range indices, unknown types and non-objects', () => {
-    expect(validateClassification({ '5': 'email' }, 2)).toEqual({});
-    expect(validateClassification({ '0': 'socialSecurityNumber' }, 2)).toEqual({});
-    expect(validateClassification({ '0': 42 }, 2)).toEqual({});
-    expect(validateClassification({ notAnIndex: 'email' }, 2)).toEqual({});
-    expect(validateClassification(['email'], 2)).toEqual({});
-    expect(validateClassification(null, 2)).toEqual({});
+  it('drops a template naming an atom that does not exist — whole, not partly', () => {
+    // `middleName` is not a profile atom. Filling in the parts that do exist
+    // would answer a different question than the one the field asked.
+    expect(validateFieldTemplates({ '0': '{firstName} {middleName}' }, plain)).toEqual({});
+    expect(toValueTemplate('{socialSecurityNumber}')).toBeNull();
+    // Defence in depth: even if one got through, substitution refuses it too.
+    expect(resolveTemplate('{firstName} {middleName}', ctx)).toBe('');
   });
 
-  it('treats "unknown" as no classification', () => {
-    expect(validateClassification({ '0': 'unknown', '1': 'city' }, 2)).toEqual({ '1': 'city' });
+  it('refuses literal text — the model may reference values, never write them', () => {
+    expect(toValueTemplate('I confirm that I have read the terms')).toBeNull();
+    expect(toValueTemplate('{firstName} the Great')).toBeNull();
+    expect(toValueTemplate('1990-01-01')).toBeNull();
+    expect(toValueTemplate('ada@example.com')).toBeNull();
+    // Separators are the only literals allowed, so real compositions still pass.
+    expect(toValueTemplate('{lastName}, {firstName}')).toBe('{lastName}, {firstName}');
+    expect(toValueTemplate('{linkedin} / {github}')).toBe('{linkedin} / {github}');
   });
 
-  it('leaves fields unclassified when the model returns invalid JSON', async () => {
+  it('still understands the old contract — a bare field-type name', () => {
+    // Small models regress to classification however the prompt is worded, and a
+    // correct answer must not be thrown away over its formatting.
+    expect(validateFieldTemplates({ '0': 'email' }, plain)).toEqual({ '0': '{email}' });
+    expect(toValueTemplate('fullName')).toBe('{firstName} {lastName}');
+    expect(toValueTemplate('coverLetter')).toBe('{coverLetter}');
+    expect(toValueTemplate('maritalStatus')).toBeNull();
+  });
+
+  it('treats every flavour of "I do not know" as no answer', () => {
+    expect(validateFieldTemplates({ '0': '', '1': 'unknown', '2': 'n/a', '3': '-' }, [
+      ...plain,
+      ...plain,
+      ...plain,
+      ...plain,
+    ])).toEqual({});
+  });
+
+  it('drops out-of-range indices, non-strings and non-objects', () => {
+    expect(validateFieldTemplates({ '5': '{email}' }, plain)).toEqual({});
+    expect(validateFieldTemplates({ '0': 42 }, plain)).toEqual({});
+    expect(validateFieldTemplates({ notAnIndex: '{email}' }, plain)).toEqual({});
+    expect(validateFieldTemplates(['{email}'], plain)).toEqual({});
+    expect(validateFieldTemplates(null, plain)).toEqual({});
+  });
+
+  it('refuses to empty the profile into one box, or to mangle a placeholder', () => {
+    expect(toValueTemplate('{firstName} {lastName} {email} {phone}')).toBeNull();
+    expect(toValueTemplate('{first name}')).toBeNull();
+    expect(toValueTemplate('{firstName')).toBeNull();
+  });
+});
+
+describe('fields the model is not allowed to answer', () => {
+  /** `serializeFingerprint` order: autocomplete|name|id|semantic|aria|label|placeholder|heading|desc */
+  const fp = (label: string, name = '') => `|${name}||${name}||${label}|||`;
+
+  it.each([
+    ['a consent checkbox', fp('I agree to the processing of my personal data', 'gdpr_consent')],
+    ['a Czech consent', fp('Souhlasím se zpracováním osobních údajů', 'souhlas')],
+    ['an employer field', fp('Current employer', 'employer_name')],
+    ['a company field', fp('Company', 'company')],
+    ['a reference', fp('Reference contact e-mail', 'reference_email')],
+    ['an emergency contact', fp('Emergency contact phone', 'emergency_contact')],
+    ['a date of birth', fp('Date of birth', 'dob')],
+    ['a Czech birth number', fp('Rodné číslo', 'rodne_cislo')],
+    ['a bank account', fp('IBAN', 'iban')],
+  ])('refuses %s even when the model answered confidently', (_case, fingerprint) => {
+    expect(refusalReason(fingerprint)).not.toBeNull();
+    expect(validateFieldTemplates({ '0': '{email}' }, [fingerprint])).toEqual({});
+    expect(validateFieldTemplates({ '0': '{firstName} {lastName}' }, [fingerprint])).toEqual({});
+  });
+
+  it('lets money fields take the salary the user wrote, and nothing else', () => {
+    const salaryField = [fp('Expected salary', 'salary_expectation')];
+    expect(validateFieldTemplates({ '0': '{salary}' }, salaryField)).toEqual({ '0': '{salary}' });
+    // Anything else in a money box is the model inventing a number.
+    expect(validateFieldTemplates({ '0': '{about}' }, salaryField)).toEqual({});
+    expect(validateFieldTemplates({ '0': '{salary} {city}' }, salaryField)).toEqual({});
+  });
+
+  it('lets date fields take the availability, and nothing else', () => {
+    const startField = [fp('Preferred start date', 'start_date')];
+    expect(validateFieldTemplates({ '0': '{availability}' }, startField)).toEqual({
+      '0': '{availability}',
+    });
+    expect(validateFieldTemplates({ '0': '{firstName}' }, startField)).toEqual({});
+  });
+
+  it('still answers an ordinary field the dictionary has no rule for', () => {
+    // There is no fixed list of supported field types any more.
+    const nickname = [fp('How should we call you?', 'preferred_name')];
+    expect(validateFieldTemplates({ '0': '{firstName}' }, nickname)).toEqual({ '0': '{firstName}' });
+  });
+
+  /**
+   * The refusal rules are drawn generously, which is only safe while they stay
+   * off the ordinary fields. This is the guard against a pattern quietly
+   * swallowing half the form.
+   */
+  it.each([
+    ['Full name', 'full_name'],
+    ['Jméno a příjmení', 'jmeno_prijmeni'],
+    ['E-mail address', 'email'],
+    ['Phone number', 'phone'],
+    ['LinkedIn profile', 'linkedin'],
+    ['City', 'city'],
+    ['Cover letter', 'cover_letter'],
+    ['Tell us about yourself', 'about'],
+    ['Portfolio URL', 'website'],
+    ['Do you need a work permit?', 'work_permit'],
+  ])('leaves %s answerable', (label, name) => {
+    expect(refusalReason(fp(label, name))).toBeNull();
+  });
+
+  it('composes the Czech one-box name, end to end', () => {
+    const profile = createEmptyProfile({ firstName: 'Dias', lastName: 'Nurgaliyev' });
+    const plan = validateFieldTemplates({ '0': '{firstName} {lastName}' }, [
+      fp('Jméno a příjmení', 'jmeno_prijmeni'),
+    ]);
+    expect(resolveTemplate(plan['0'], { profile })).toBe('Dias Nurgaliyev');
+  });
+});
+
+describe('planFieldTemplates (FR-5.3)', () => {
+  it('leaves fields untouched when the model returns invalid JSON', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ choices: [{ message: { content: 'not json at all' } }] }),
     );
-    await expect(classifyFields(['a', 'b'], 'key', 'model')).resolves.toEqual({});
+    await expect(planFieldTemplates(['a', 'b'], groqEndpoint)).resolves.toEqual({});
   });
 
   it('does not call the API for an empty fingerprint list', async () => {
-    await expect(classifyFields([], 'key', 'model')).resolves.toEqual({});
+    await expect(planFieldTemplates([], groqEndpoint)).resolves.toEqual({});
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('refuses to make a request without a key', async () => {
-    const err = await rejection<GroqApiError>(classifyFields(['a'], '', 'model'));
-    expect(err.kind).toBe('MISSING_KEY');
+  /**
+   * Silent, not thrown. This is an unattended pass over fields nothing was
+   * written into; there is no one waiting for it and nothing to report to.
+   */
+  it('declines without a key, without a request and without an error', async () => {
+    await expect(planFieldTemplates(['a'], { ...groqEndpoint, apiKey: '' })).resolves.toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines when the key belongs to another provider — before any request', async () => {
+    const foreign = { ...groqEndpoint, apiKey: 'sk-or-v1-abcdef' };
+    await expect(planFieldTemplates(['a'], foreign)).resolves.toEqual({});
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   /** The egress point enforces the cap too — a caller cannot talk past it. */
   it('never sends more than MAX_CLASSIFY_FIELDS fingerprints', async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ choices: [{ message: { content: '{"0":"email"}' } }] }),
+      jsonResponse({ choices: [{ message: { content: '{"0":"{email}"}' } }] }),
     );
     const many = Array.from({ length: MAX_CLASSIFY_FIELDS + 30 }, (_, i) => `fp_${i}`);
 
-    await classifyFields(many, 'key', 'model');
+    await planFieldTemplates(many, groqEndpoint);
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as {
       messages: { content: string }[];
     };
-    const prompt = body.messages[0].content;
+    const prompt = body.messages.map((m) => m.content).join('\n');
     expect(prompt).toContain('fp_0');
     expect(prompt).toContain(`fp_${MAX_CLASSIFY_FIELDS - 1}`);
     expect(prompt).not.toContain(`fp_${MAX_CLASSIFY_FIELDS}`);
   });
 
+  it('treats an empty completion as "no answer", not as a parse failure', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '   ' } }] }));
+    await expect(planFieldTemplates(['a'], groqEndpoint)).resolves.toEqual({});
+  });
+
   it('validates the reply against the truncated batch, not the original list', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
-        choices: [{ message: { content: `{"0":"email","${MAX_CLASSIFY_FIELDS}":"phone"}` } }],
+        choices: [
+          { message: { content: `{"0":"{email}","${MAX_CLASSIFY_FIELDS}":"{phone}"}` } },
+        ],
       }),
     );
     const many = Array.from({ length: MAX_CLASSIFY_FIELDS + 30 }, (_, i) => `fp_${i}`);
 
-    // Index 40 was never sent, so an answer about it is a hallucination.
-    await expect(classifyFields(many, 'key', 'model')).resolves.toEqual({ '0': 'email' });
+    // An index past the batch was never sent: an answer about it is invented.
+    await expect(planFieldTemplates(many, groqEndpoint)).resolves.toEqual({ '0': '{email}' });
+  });
+
+  it('offers the model the atom names — and only the names (S-3)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '{}' } }] }));
+    await planFieldTemplates(['|||||Full name|||'], groqEndpoint);
+    const prompt = String(fetchMock.mock.calls[0][1].body);
+    expect(prompt).toContain('firstName');
+    expect(prompt).toContain('lastName');
   });
 
   /**
-   * S-3 on the actual wire. The fingerprints below are what
-   * `serializeFingerprint` produces for a filled form; the profile that filled it
-   * must appear nowhere in the request.
+   * The fingerprints below are what `serializeFingerprint` produces for a filled
+   * form; the profile that filled it must appear nowhere in the request — which
+   * is what makes it safe to ask the model to *compose* a value it never sees.
    */
   it('puts nothing but the fingerprints in the request body (S-3)', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '{}' } }] }));
@@ -509,10 +702,16 @@ describe('validateClassification (FR-5.3)', () => {
       lastName: 'Lovelace',
       email: 'ada@example.com',
       phone: '+420123456789',
+      city: 'Praha',
+      salaryExpectation: '80000',
       about: 'I build things that work.',
     });
+    const secret = 'gsk_supersecretkeyvalue';
 
-    await classifyFields(['||op|op||Preferred name|||', '|||||Start date|||'], 'key', 'model');
+    await planFieldTemplates(
+      ['||op|op||Preferred name|||', '|||||Start date|||'],
+      { ...groqEndpoint, apiKey: secret },
+    );
 
     const request = fetchMock.mock.calls[0][1] as RequestInit;
     const body = String(request.body);
@@ -521,7 +720,661 @@ describe('validateClassification (FR-5.3)', () => {
     }
     expect(body).toContain('Preferred name');
     // The key travels in the header, as it must — not in the payload.
-    expect(body).not.toContain('key');
-    expect((request.headers as Record<string, string>).Authorization).toBe('Bearer key');
+    expect(body).not.toContain(secret);
+    expect((request.headers as Record<string, string>).Authorization).toBe(`Bearer ${secret}`);
+  });
+});
+
+describe('the medium ceiling (FR-5.3)', () => {
+  it('is the only confidence an LLM-derived field can have', () => {
+    expect(LLM_FIELD_CONFIDENCE).toBe('medium');
+    // @ts-expect-error — `LlmFieldConfidence` has exactly one inhabitant, so
+    // there is no expression anywhere that can raise a model-derived match to
+    // `high`. This line failing to error is the regression.
+    const raised: LlmFieldConfidence = 'high';
+    expect(raised).toBe('high');
+  });
+
+  it('gives the model no channel to ask for a confidence at all', () => {
+    const reply: FromBackgroundMessage = { type: 'CLASSIFY_RESULT', templates: { '0': '{email}' } };
+    expect(Object.keys(reply).sort()).toEqual(['templates', 'type']);
+    // The wire carries templates and nothing else — there is no field on it
+    // through which a model could ask to be trusted more.
+    // @ts-expect-error — no `confidence` field exists on the wire, by design.
+    const smuggled: FromBackgroundMessage = { type: 'CLASSIFY_RESULT', templates: {}, confidence: 'high' };
+    expect(smuggled).toBeTruthy();
+  });
+});
+
+describe('provider selection', () => {
+  it('recognises the four key prefixes that matter, before any request', () => {
+    expect(identifyKeyOrigin('gsk_abc123')?.id).toBe('groq');
+    expect(identifyKeyOrigin('sk-or-v1-abc123')?.id).toBe('openrouter');
+    expect(identifyKeyOrigin('sk-proj-abc123')?.id).toBe('openai');
+    expect(identifyKeyOrigin('sk-abc123')?.id).toBe('openai');
+    expect(identifyKeyOrigin('sk-ant-abc123')?.id).toBe('anthropic');
+    // Together's keys are bare hex: unknown is a normal answer, not a warning.
+    expect(identifyKeyOrigin('a'.repeat(64))).toBeNull();
+    expect(identifyKeyOrigin('')).toBeNull();
+  });
+
+  /** The hour this cost: an OpenRouter key, a Groq endpoint, "Invalid API Key". */
+  it('names both sides of a mismatch and says how to fix it', () => {
+    const warning = keyProviderMismatch('groq', 'sk-or-v1-abc');
+    expect(warning).toMatch(/OpenRouter/);
+    expect(warning).toMatch(/Groq/);
+    expect(warning).toMatch(/Switch Provider to OpenRouter/);
+
+    expect(keyProviderMismatch('groq', 'gsk_abc')).toBeNull();
+    expect(keyProviderMismatch('openrouter', 'sk-or-v1-abc')).toBeNull();
+    // Nothing is known about a self-hosted endpoint's keys, so nothing is said.
+    expect(keyProviderMismatch('custom', 'sk-or-v1-abc')).toBeNull();
+    expect(keyProviderMismatch('groq', 'whatever')).toBeNull();
+  });
+
+  it('says so plainly when the key is for a service we cannot use at all', () => {
+    expect(keyProviderMismatch('groq', 'sk-ant-abc')).toMatch(/not an OpenAI-compatible provider/);
+  });
+
+  it('refuses to post a foreign key to the wrong company', async () => {
+    const err = await rejection<GroqApiError>(
+      generateMotivation({}, createEmptyProfile(), { ...groqEndpoint, apiKey: 'sk-or-v1-x' }),
+    );
+    expect(err.kind).toBe('WRONG_PROVIDER');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('means Groq, with its old URL and old default model, when nothing is stored', () => {
+    const endpoint = buildEndpoint({ apiKey: 'gsk_x' });
+    expect(endpoint.providerId).toBe('groq');
+    expect(endpoint.baseUrl).toBe('https://api.groq.com/openai/v1');
+    expect(endpoint.model).toBe('llama-3.3-70b-versatile');
+    // Junk in storage is not a reason to change where requests go.
+    expect(buildEndpoint({ providerId: 'nonsense' }).baseUrl).toBe(endpoint.baseUrl);
+    expect(providerOf(undefined).id).toBe('groq');
+  });
+
+  it('gives each provider its own default model', () => {
+    expect(buildEndpoint({ providerId: 'openrouter' }).model).toBe(
+      'meta-llama/llama-3.3-70b-instruct',
+    );
+    expect(buildEndpoint({ providerId: 'openai' }).model).toBe('gpt-4o-mini');
+  });
+
+  it('sends the request to the selected provider, with its headers', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const endpoint = buildEndpoint({ providerId: 'openrouter', apiKey: 'sk-or-v1-x' });
+
+    await generateMotivation({}, createEmptyProfile(), endpoint);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect((init.headers as Record<string, string>)['X-Title']).toBe('JobFill');
+  });
+
+  it('only lets an https URL reach fetch', () => {
+    expect(validateBaseUrl('https://example.com/v1')).toBeUndefined();
+    expect(validateBaseUrl('http://example.com/v1')).toMatch(/https/);
+    expect(validateBaseUrl('')).toMatch(/No API URL/);
+    expect(validateBaseUrl('not a url')).toMatch(/not a valid URL/);
+    expect(validateBaseUrl('https://user:pw@example.com/v1')).toMatch(/username and password/);
+    expect(validateBaseUrl('https://example.com/v1?key=1')).toMatch(/after the path/);
+  });
+
+  it('normalises what people actually paste', () => {
+    expect(normalizeBaseUrl('https://example.com/v1/')).toBe('https://example.com/v1');
+    expect(normalizeBaseUrl('https://example.com/v1/chat/completions')).toBe(
+      'https://example.com/v1',
+    );
+    expect(normalizeBaseUrl('  https://example.com/v1  ')).toBe('https://example.com/v1');
+  });
+
+  it('never sends a custom-provider request to a leftover URL', () => {
+    // Switching to a named provider must not keep the custom endpoint alive.
+    expect(buildEndpoint({ providerId: 'groq', customBaseUrl: 'https://evil.test/v1' }).baseUrl).toBe(
+      'https://api.groq.com/openai/v1',
+    );
+    expect(buildEndpoint({ providerId: 'custom', customBaseUrl: '' }).baseUrl).toBe('');
+    expect(buildEndpoint({ providerId: 'custom' }).baseUrl).toBe('');
+  });
+
+  it('reduces a base URL to the host permission it needs', () => {
+    expect(originPattern('https://api.groq.com/openai/v1')).toBe('https://api.groq.com/*');
+    expect(originPattern('https://llm.internal:8443/v1')).toBe('https://llm.internal:8443/*');
+    // A URL that does not parse yields no permission rather than a wildcard —
+    // this feeds `chrome.permissions.request`, so guessing would be a grant.
+    expect(originPattern('not a url')).toBeNull();
+    expect(originPattern('')).toBeNull();
+  });
+
+  it('gives every built-in provider a requestable origin', () => {
+    for (const id of PROVIDER_IDS) {
+      const provider = PROVIDERS[id];
+      // `custom` has no built-in URL; the user supplies one and it is validated.
+      if (!provider.baseUrl) {
+        expect(provider.id).toBe('custom');
+        continue;
+      }
+      expect(originPattern(provider.baseUrl)).toMatch(/^https:\/\/[^/]+\/\*$/);
+      expect(validateBaseUrl(provider.baseUrl)).toBeUndefined();
+      expect(provider.defaultModel).not.toBe('');
+    }
+  });
+});
+
+// ─── groq.ts — the rest of the failure taxonomy ───────────────────────────────
+
+describe('the LLM client at its edges', () => {
+  const profile = createEmptyProfile({ firstName: 'Ada', about: 'Engineer' });
+
+  it('says an endpoint has no URL instead of fetching the empty string', async () => {
+    // `custom` with nothing typed yet. Requesting "" would be a same-origin GET
+    // against the extension itself, which fails in a way that reads like a bug.
+    const unconfigured = buildEndpoint({ providerId: 'custom', apiKey: 'k' });
+
+    const chat = await rejection<GroqApiError>(generateMotivation({}, profile, unconfigured));
+    expect(chat.kind).toBe('BAD_REQUEST');
+    expect(chat.message).toMatch(/No API URL is configured for your endpoint/);
+
+    const list = await rejection<GroqApiError>(listModels(unconfigured));
+    expect(list.kind).toBe('BAD_REQUEST');
+    expect(list.message).toMatch(/No API URL is configured/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a 408 onto TIMEOUT rather than "the request was bad"', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse('RAW_TIMEOUT_TEXT', 408, 'text/plain'));
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, groqEndpoint));
+    expect(err.kind).toBe('TIMEOUT');
+    expect(err.message).toMatch(/timed out/i);
+    expect(err.message).not.toContain('RAW_TIMEOUT_TEXT');
+  });
+
+  it('reads a transport failure — which carries no body at all — as a network error', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, groqEndpoint));
+    expect(err.kind).toBe('NETWORK_ERROR');
+    expect(err.detail).toBeUndefined();
+  });
+
+  it('does not crash when the provider answers a bare `null`', async () => {
+    // A proxy that answers `null` with a JSON content type used to throw a raw
+    // TypeError out of the client, past every translation this file exists for.
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, groqEndpoint));
+    expect(err).toBeInstanceOf(GroqApiError);
+    expect(err.kind).toBe('NETWORK_ERROR');
+    expect(err.message).not.toMatch(/undefined|TypeError/);
+  });
+
+  it('returns an empty string when the choice carries no content', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{}] }));
+    await expect(generateMotivation({}, profile, groqEndpoint)).resolves.toBe('');
+  });
+
+  it('quotes error.message only when it is actually a string', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: { nested: 'oops' } } }, 401));
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, groqEndpoint));
+    expect(err.kind).toBe('UNAUTHORIZED');
+    expect(err.detail).toBeUndefined();
+    expect(err.message).not.toMatch(/said:/);
+    expect(err.message).not.toContain('oops');
+  });
+
+  it('does not invent a model name when the endpoint has none configured', async () => {
+    // `custom` has no default model, so a bad-model error has nothing to quote.
+    const custom = buildEndpoint({ providerId: 'custom', apiKey: 'k', customBaseUrl: 'https://llm.test/v1' });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: 'no such model' } }, 404));
+
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, custom));
+    expect(err.kind).toBe('BAD_MODEL');
+    expect(err.message).toMatch(/does not serve the configured model/);
+    expect(err.message).not.toMatch(/“”/);
+  });
+
+  it('keeps a 400 with an unreadable body as BAD_REQUEST, not BAD_MODEL', async () => {
+    // Nothing says "model", so the only honest answer is the generic one — the
+    // opposite mistake (guessing BAD_MODEL) sends the user to change a setting
+    // that is fine.
+    fetchMock.mockResolvedValueOnce(textResponse('<html>Bad Request</html>', 400));
+    const err = await rejection<GroqApiError>(generateMotivation({}, profile, groqEndpoint));
+    expect(err.kind).toBe('BAD_REQUEST');
+    expect(err.detail).toBeUndefined();
+    expect(err.message).not.toContain('<html>');
+  });
+
+  it('writes the motivation in the language of the posting', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(jsonResponse({ choices: [{ message: { content: 'ok' } }] })),
+    );
+
+    await generateMotivation({ description: 'Hledáme vývojáře se zkušeností.' }, profile, groqEndpoint);
+    expect(String(fetchMock.mock.calls[0][1].body)).toContain('in Czech');
+
+    await generateMotivation({ description: 'We are looking for a developer.' }, profile, groqEndpoint);
+    expect(String(fetchMock.mock.calls[1][1].body)).toContain('in English');
+  });
+});
+
+/**
+ * A key is a credential, so the check that it is addressed to the right company
+ * has to happen on *every* path that puts it on the wire — not just the one the
+ * first bug report came through.
+ */
+describe('WRONG_PROVIDER never reaches the network', () => {
+  it.each([
+    ['generateMotivation', (e: LlmEndpoint) => generateMotivation({}, createEmptyProfile(), e)],
+    ['probeModel', (e: LlmEndpoint) => probeModel(e)],
+    ['listModels', (e: LlmEndpoint) => listModels(e)],
+  ])('%s refuses a foreign key before opening a socket', async (_name, call) => {
+    const foreign = { ...groqEndpoint, apiKey: 'sk-or-v1-notgroqs' };
+    const err = await rejection<GroqApiError>(call(foreign));
+    expect(err.kind).toBe('WRONG_PROVIDER');
+    expect(err.message).toMatch(/Switch Provider to OpenRouter/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('says so plainly for a key no provider here can use', async () => {
+    const anthropic = { ...groqEndpoint, apiKey: 'sk-ant-abc' };
+    const err = await rejection<GroqApiError>(listModels(anthropic));
+    expect(err.kind).toBe('WRONG_PROVIDER');
+    expect(err.message).toMatch(/not an OpenAI-compatible provider/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('listModels across the two catalogue modes', () => {
+  it('asks an account-scoped provider what this key may use', async () => {
+    expect(PROVIDERS.groq.catalogue).toBe('account');
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ id: 'zeta' }, { id: 'alpha' }, { id: 42 }, { id: '' }, {}] }),
+    );
+
+    const endpoint = buildEndpoint({ providerId: 'groq', apiKey: 'gsk_x' });
+    await expect(listModels(endpoint)).resolves.toEqual(['alpha', 'zeta']);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.groq.com/openai/v1/models');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer gsk_x');
+  });
+
+  it('asks a catalogue-scoped provider the same question, with its headers', async () => {
+    expect(PROVIDERS.openrouter.catalogue).toBe('catalogue');
+    expect(PROVIDERS.openrouter.modelsPageUrl).toMatch(/^https:/);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [{ id: 'z/one' }, { id: 'a/two' }] }));
+
+    const endpoint = buildEndpoint({ providerId: 'openrouter', apiKey: 'sk-or-v1-x' });
+    await expect(listModels(endpoint)).resolves.toEqual(['a/two', 'z/one']);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://openrouter.ai/api/v1/models');
+    expect((init.headers as Record<string, string>)['X-Title']).toBe('JobFill');
+  });
+
+  it('treats an answer with no data array as an empty list, not a failure', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    await expect(listModels(buildEndpoint({ providerId: 'groq', apiKey: 'gsk_x' }))).resolves.toEqual(
+      [],
+    );
+  });
+
+  it('reports a rate-limited catalogue read like any other failure', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: { message: 'Rate limit reached' } }, 429),
+    );
+    const err = await rejection<GroqApiError>(
+      listModels(buildEndpoint({ providerId: 'together', apiKey: 'beefcafe' })),
+    );
+    expect(err.kind).toBe('RATE_LIMITED');
+    expect(err.detail).toBe('Rate limit reached');
+  });
+
+  it('probes the configured model over the very URL a fill would use', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const endpoint = buildEndpoint({ providerId: 'openai', apiKey: 'sk-proj-x' });
+
+    await probeModel(endpoint);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'gpt-4o-mini', max_tokens: 1 });
+  });
+});
+
+describe('answerOpenQuestions (FR-5.2)', () => {
+  const profile = createEmptyProfile({ firstName: 'Ada', lastName: 'Lovelace', about: 'Engineer' });
+
+  it('returns one answer per question, in the order they were asked', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { content: '["first","second"]' } }] }),
+    );
+    await expect(
+      answerOpenQuestions(['Why us?', 'When can you start?'], profile, {}, groqEndpoint),
+    ).resolves.toEqual(['first', 'second']);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.response_format).toEqual({ type: 'json_object' });
+    expect(String(body.messages[1].content)).toContain('1. Why us?');
+  });
+
+  it('unwraps the object that json_object mode insists on', async () => {
+    for (const content of [
+      '{"answers":["a","b"]}',
+      '{"responses":["a","b"]}',
+      '{"q1":"a","q2":"b"}',
+    ]) {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content } }] }));
+      await expect(answerOpenQuestions(['x', 'y'], profile, {}, groqEndpoint)).resolves.toEqual([
+        'a',
+        'b',
+      ]);
+    }
+  });
+
+  /**
+   * A short or malformed answer leaves *blanks*, never a shifted set — an answer
+   * landing under the wrong question is worse than no answer at all.
+   */
+  it('pads with empty strings rather than shifting answers up', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '["only"]' } }] }));
+    await expect(answerOpenQuestions(['a', 'b', 'c'], profile, {}, groqEndpoint)).resolves.toEqual([
+      'only',
+      '',
+      '',
+    ]);
+  });
+
+  it.each([
+    ['invalid JSON', 'not json'],
+    ['a bare number', '42'],
+    ['a literal null', 'null'],
+    ['nothing at all', ''],
+  ])('answers blanks when the model returns %s', async (_case, content) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content } }] }));
+    await expect(answerOpenQuestions(['a', 'b'], profile, {}, groqEndpoint)).resolves.toEqual([
+      '',
+      '',
+    ]);
+  });
+
+  it('drops a non-string entry instead of writing "[object Object]" into a form', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { content: '["ok",{"a":1}]' } }] }),
+    );
+    await expect(answerOpenQuestions(['a', 'b'], profile, {}, groqEndpoint)).resolves.toEqual([
+      'ok',
+      '',
+    ]);
+  });
+
+  it('introduces the applicant by name when the profile has no summary', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '[]' } }] }));
+    await answerOpenQuestions(
+      ['Why us?'],
+      createEmptyProfile({ firstName: 'Ada', lastName: 'Lovelace' }),
+      {},
+      groqEndpoint,
+    );
+    expect(String(fetchMock.mock.calls[0][1].body)).toContain('Ada Lovelace');
+  });
+
+  it('refuses without a key, and asks nothing for an empty question list', async () => {
+    const err = await rejection<GroqApiError>(
+      answerOpenQuestions(['a'], profile, {}, { ...groqEndpoint, apiKey: '' }),
+    );
+    expect(err.kind).toBe('MISSING_KEY');
+
+    await expect(answerOpenQuestions([], profile, {}, groqEndpoint)).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the questions themselves to pick a language', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(jsonResponse({ choices: [{ message: { content: '[]' } }] })),
+    );
+
+    // No description — the questions are the only evidence there is.
+    await answerOpenQuestions(['Proč chcete pracovat u nás?'], profile, {}, groqEndpoint);
+    expect(String(fetchMock.mock.calls[0][1].body)).toContain('in Czech');
+
+    // A description outranks them when there is one.
+    await answerOpenQuestions(
+      ['Proč chcete pracovat u nás?'],
+      profile,
+      { description: 'An English posting.' },
+      groqEndpoint,
+    );
+    expect(String(fetchMock.mock.calls[1][1].body)).toContain('in English');
+  });
+});
+
+// ─── http.ts — the paths a healthy server never takes ─────────────────────────
+
+describe('httpRequest at its edges', () => {
+  it('maps 408 and 410 the way the client needs them', async () => {
+    for (const [status, kind] of [
+      [408, 'TIMEOUT'],
+      [410, 'NOT_FOUND'],
+    ] as const) {
+      fetchMock.mockResolvedValueOnce(textResponse('', status, 'text/plain'));
+      const err = await rejection<HttpError>(httpRequest('https://x.test', { service: 'X' }));
+      expect(err.kind).toBe(kind);
+    }
+  });
+
+  it('survives a response whose body cannot be read', async () => {
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ ok: false, status: 500, text: () => Promise.reject(new Error('stream died')) }),
+    );
+    const err = await rejection<HttpError>(httpRequest('https://x.test', { service: 'X' }));
+    expect(err.kind).toBe('SERVER_ERROR');
+    expect(err.body).toBe('');
+    // No Content-Type header at all is `undefined`, not the string "null".
+    expect(err.contentType).toBeUndefined();
+  });
+
+  it('still names the service when fetch rejects with nothing useful', async () => {
+    fetchMock.mockRejectedValueOnce(undefined);
+    const err = await rejection<HttpError>(httpRequest('https://x.test', { service: 'Notion' }));
+    expect(err.kind).toBe('NETWORK_ERROR');
+    expect(err.message).toBe('Could not reach Notion: network error.');
+  });
+});
+
+// ─── notion.ts — schema details and error translation ─────────────────────────
+
+describe('Notion schema discovery details', () => {
+  it('reads select/status options off the database and ignores nameless ones', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        properties: {
+          Name: { name: 'Name', type: 'title' },
+          Stav: { name: 'Stav', type: 'status', status: { options: [{ name: 'Submitted' }, { name: '' }, {}] } },
+          Kind: { type: 'select', select: { options: [] } },
+          Weird: { name: 'Weird' },
+        },
+      }),
+    );
+
+    const report = await inspectNotionDatabase('secret_token', 'db-options');
+
+    expect(report.mapping.status).toEqual({ name: 'Stav', type: 'status', options: ['Submitted'] });
+    // An empty option list is not an option list — the key is left off entirely.
+    expect(report.available.find((p) => p.name === 'Kind')).toEqual({ name: 'Kind', type: 'select' });
+    // A property with no declared type still has to be listed, or the hint the
+    // options page shows would be missing the very column that is in the way.
+    expect(report.available.find((p) => p.name === 'Weird')?.type).toBe('unknown');
+  });
+
+  it('translates a 404 on the database read', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: 'object_not_found', message: 'Could not find database with ID.' }, 404),
+    );
+    const err = await rejection<RemoteLogError>(inspectNotionDatabase('secret_token', 'db-404'));
+    expect(err.kind).toBe('NOT_FOUND');
+    expect(err.message).toMatch(/Check the database ID/);
+    expect(err.detail).toBe('Could not find database with ID.');
+    expect(err.retryable).toBe(false);
+  });
+
+  it('reports a database with no properties at all as unusable', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    const report = await inspectNotionDatabase('secret_token', 'db-empty');
+    expect(report.usable).toBe(false);
+    expect(report.available).toEqual([]);
+    expect(report.missing.join(' ')).toMatch(/Title property/i);
+  });
+
+  it('keeps an HTML error page out of the sentence it shows', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse('<html>Access denied</html>', 401));
+    const err = await rejection<RemoteLogError>(inspectNotionDatabase('secret_token', 'db-html'));
+    expect(err.kind).toBe('UNAUTHORIZED');
+    // Nothing parseable to quote → nothing is quoted, rather than the raw page.
+    expect(err.detail).toBeUndefined();
+    expect(err.message).not.toContain('<html>');
+  });
+
+  it('quotes `message` only when it is a string', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: 'unauthorized', message: { nested: 'oops' } }, 401),
+    );
+    const err = await rejection<RemoteLogError>(inspectNotionDatabase('secret_token', 'db-odd'));
+    expect(err.kind).toBe('UNAUTHORIZED');
+    expect(err.detail).toBeUndefined();
+  });
+
+  it('explains a rejected write even when Notion sends no message with it', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ properties: { Name: { name: 'Name', type: 'title' } } }),
+      )
+      .mockResolvedValueOnce(textResponse('Bad Request', 400, 'text/plain'));
+
+    const err = await rejection<RemoteLogError>(logToNotion(entry, 'secret_token', 'db-400-bare'));
+    expect(err.kind).toBe('SCHEMA_MISMATCH');
+    expect(err.message).toMatch(/do not match what JobFill sends/);
+  });
+
+  it('falls back to the shared copy for a status it has no advice for', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse('<html>502</html>', 502));
+    const err = await rejection<RemoteLogError>(inspectNotionDatabase('secret_token', 'db-502'));
+    expect(err.kind).toBe('NETWORK_ERROR');
+    expect(err.retryable).toBe(true);
+  });
+
+  it('explains a transport failure, which arrives with no body at all', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const err = await rejection<RemoteLogError>(inspectNotionDatabase('secret_token', 'db-offline'));
+    expect(err.kind).toBe('NETWORK_ERROR');
+    expect(err.detail).toMatch(/Failed to fetch/);
+  });
+});
+
+describe('Notion properties for a sparse entry', () => {
+  it('omits every slot the entry has nothing for', () => {
+    const blank = createApplicationEntry({ profileId: '', url: '' });
+    const props = buildNotionProperties(blank, buildMapping(canonicalProps).mapping);
+
+    expect(props.Company).toBeUndefined();
+    expect(props.URL).toBeUndefined();
+    expect(props.Profile).toBeUndefined();
+    // The title always has something to say — that is what its fallback is for.
+    expect(props.Name).toEqual({ title: [{ text: { content: 'Job application' } }] });
+  });
+
+  it('skips a property whose type JobFill does not know how to write', () => {
+    const props = buildNotionProperties(entry, {
+      title: { name: 'Name', type: 'title' },
+      company: { name: 'Owner', type: 'people' },
+    });
+    expect(props.Name).toBeDefined();
+    expect(props.Owner).toBeUndefined();
+  });
+});
+
+// ─── sheets.ts — error translation ────────────────────────────────────────────
+
+describe('logToSheets error translation', () => {
+  const endpoint = 'https://script.google.com/macros/s/AKfy123/exec';
+
+  it('reads a 401/403 as a deployment sharing problem', async () => {
+    for (const status of [401, 403]) {
+      fetchMock.mockResolvedValueOnce(textResponse('denied', status, 'text/plain'));
+      const err = await rejection<RemoteLogError>(logToSheets(entry, endpoint));
+      expect(err.kind).toBe('UNAUTHORIZED');
+      expect(err.message).toMatch(/Execute as: Me/);
+      expect(err.retryable).toBe(false);
+    }
+  });
+
+  it('reads a 404 as a stale deployment URL', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse('', 404, 'text/plain'));
+    const err = await rejection<RemoteLogError>(logToSheets(entry, endpoint));
+    expect(err.kind).toBe('NOT_FOUND');
+    expect(err.message).toMatch(/copy the new \/exec URL/);
+  });
+
+  it('falls back to the shared copy for anything else', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse('slow down', 429, 'text/plain'));
+    const err = await rejection<RemoteLogError>(logToSheets(entry, endpoint));
+    expect(err.kind).toBe('RATE_LIMITED');
+    expect(err.retryable).toBe(true);
+  });
+
+  /** A wrong URL is a different fix from a missing one, so it is a different kind. */
+  it('rejects a syntactically wrong URL as NOT_FOUND, without a request', async () => {
+    const err = await rejection<RemoteLogError>(logToSheets(entry, 'https://evil.example.com/exec'));
+    expect(err.kind).toBe('NOT_FOUND');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('lets an HTML answer that is not a sign-in page through', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse('<html><body>Logged</body></html>'));
+    await expect(logToSheets(entry, endpoint)).resolves.toBeUndefined();
+  });
+
+  it('accepts a response that declares no content type at all', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ ok: true, status: 200 }));
+    await expect(logToSheets(entry, endpoint)).resolves.toBeUndefined();
+  });
+
+  it('does not turn an unreadable body into a sign-in accusation', async () => {
+    // The body is only read to *recognise* the sign-in page; failing to read it
+    // is not evidence that it was one.
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({
+        ok: true,
+        status: 200,
+        contentType: 'text/html',
+        text: () => Promise.reject(new Error('stream died')),
+      }),
+    );
+    await expect(logToSheets(entry, endpoint)).resolves.toBeUndefined();
+  });
+});
+
+// ─── remoteLog.ts — the non-HTTP fallback ─────────────────────────────────────
+
+describe('toRemoteLogError for things that are not HTTP failures', () => {
+  it('keeps the thrown message as detail and never as the message', () => {
+    const err = toRemoteLogError(new Error('ReferenceError deep inside'), 'Notion');
+    expect(err.kind).toBe('NETWORK_ERROR');
+    expect(err.detail).toBe('ReferenceError deep inside');
+    expect(err.message).toBe(`Notion: ${'Could not reach the logging backend. The entry is saved locally.'}`);
+  });
+
+  it('stringifies a non-Error throwable', () => {
+    expect(toRemoteLogError('a bare string', 'Notion').detail).toBe('a bare string');
+    expect(toRemoteLogError(undefined, 'Notion').detail).toBe('undefined');
+  });
+
+  it('lets a client override the copy without losing the evidence', () => {
+    const err = toRemoteLogError(new Error('boom'), 'Notion', {
+      NETWORK_ERROR: 'Could not reach the Apps Script Web App.',
+    });
+    expect(err.message).toBe('Could not reach the Apps Script Web App.');
+    expect(err.detail).toBe('boom');
   });
 });

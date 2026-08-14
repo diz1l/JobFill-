@@ -1,13 +1,9 @@
 /**
- * Single fetch wrapper for every outbound request of the extension (S-2: all
- * network traffic originates in the background worker).
- *
- * It guarantees three things that were previously copy-pasted or missing:
- *   1. a hard timeout via `AbortController` (no request can hang forever);
- *   2. a uniform status → {@link HttpErrorKind} mapping, so callers branch on an
- *      enum instead of on raw numbers;
- *   3. a `retryable` flag, which the remote-logging retry queue uses to decide
- *      whether a second attempt makes sense (FR-6.3).
+ * Single fetch wrapper for every outbound request; all network traffic originates
+ * in the background worker. It centralises a hard timeout via `AbortController`
+ * so no request can hang forever, a uniform status → {@link HttpErrorKind} mapping
+ * so callers branch on an enum instead of raw numbers, and a `retryable` flag the
+ * remote-log retry queue uses to decide whether a second attempt makes sense.
  */
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
@@ -51,6 +47,16 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * Status → kind. `BAD_REQUEST` is the deliberate fall-through: "understood the
+ * request and refused it" covers 400 and every other unlisted 4xx (405, 409, …).
+ * A 400 does not carry the *reason*, though — Groq answers both a retired model
+ * (`{"error":{"code":"model_decommissioned"}}`) and a malformed request with one
+ * — so that discrimination belongs in the service client, reading
+ * {@link HttpError.body}, which is why the body is attached to every failure.
+ * Do not flatten `BAD_REQUEST` into "network error": `api/groq.ts` used to, and
+ * it masked every model error.
+ */
 function statusToKind(status: number): HttpErrorKind {
   if (status === 401) return 'UNAUTHORIZED';
   if (status === 403) return 'FORBIDDEN';

@@ -24,7 +24,6 @@ interface NotionDatabase {
 
 // ─── Logical slots ────────────────────────────────────────────────────────────
 
-/** The six pieces of an `ApplicationEntry` we try to place into the database. */
 export type NotionSlot = 'title' | 'company' | 'url' | 'date' | 'status' | 'profile';
 
 interface SlotSpec {
@@ -33,7 +32,6 @@ interface SlotSpec {
   types: string[];
   /** Lower-cased name fragments that identify the property. */
   aliases: string[];
-  /** A database without it cannot be used at all. */
   required: boolean;
   /** Shown to the user when the slot cannot be mapped. */
   describe: string;
@@ -124,8 +122,7 @@ function pickProperty(spec: SlotSpec, props: NotionPropertyInfo[]): NotionProper
     );
     if (byName) return byName;
   }
-  // 2. Any property whose name matches, regardless of type — only if the type is
-  //    still one we know how to write.
+  // 2. Same name match across all acceptable types at once, in property order.
   const looseName = props.find(
     (p) => spec.types.includes(p.type) && spec.aliases.some((a) => p.name.toLowerCase().includes(a)),
   );
@@ -165,8 +162,7 @@ export function buildMapping(properties: NotionPropertyInfo[]): NotionSchemaRepo
 
 /**
  * Read the database schema and work out which property receives which value.
- * Called before every write (cached per worker lifetime) and by the options page
- * to preview the mapping.
+ * Called before every write (cached per worker lifetime) and by the options page.
  */
 export async function inspectNotionDatabase(
   token: string,
@@ -319,11 +315,9 @@ function toNotionError(err: unknown): RemoteLogError {
 // ─── Public write path ────────────────────────────────────────────────────────
 
 /**
- * Append an entry to a Notion database (FR-6.2).
- *
- * Unlike the previous hard-coded version, the property names and types are
- * discovered from the database itself, so any reasonable board works and an
- * unusable one produces an explanation instead of a raw 400.
+ * Append an entry to a Notion database. Property names and types are discovered
+ * from the database itself rather than hard-coded, so any reasonable board works
+ * and an unusable one produces an explanation instead of a raw 400.
  */
 export async function logToNotion(
   entry: ApplicationEntry,

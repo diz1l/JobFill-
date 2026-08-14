@@ -23,7 +23,9 @@ import {
   forgetCoverTargets,
 } from '../shared/filler/coverTarget';
 import { removeAllHighlights, highlightField } from '../shared/filler/highlight';
+import { describeMissingData } from '../shared/filler/missingData';
 import { buildFingerprint, type FieldFingerprint } from '../shared/field-matcher/fingerprint';
+import { validateFieldTemplates } from '../shared/api/fieldTemplates';
 import {
   FRAME_REPLY,
   type FrameReplyMessage,
@@ -34,7 +36,6 @@ import {
 } from '../shared/messages';
 import type { FillSummary, Profile } from '../shared/types';
 
-// ─── Module-level state: open question elements keyed by id ──────────────────
 const pendingQuestionEls = new Map<string, HTMLTextAreaElement>();
 
 /** Sub-frames smaller than this cannot hold an application form (ads, pixels, widgets). */
@@ -42,23 +43,21 @@ const MIN_FRAME_WIDTH = 200;
 const MIN_FRAME_HEIGHT = 150;
 /** Grace period before the inline button disappears after blur. */
 const BUTTON_HIDE_DELAY_MS = 350;
+/** A toast carrying an instruction stays up longer than one carrying counters. */
+const HINT_TOAST_MS = 7000;
 
 export default defineContentScript({
   /**
-   * NFR-2 asks for the narrowest possible injection surface.
+   * The narrowest injection surface we can get away with. `<all_urls>` also
+   * covered `file://`, `ftp://` and every custom scheme; the pair below is real
+   * web pages only. On top of that: `excludeMatches` drops mail / payment /
+   * identity origins that can never hold a job application, `excludeGlobs` drops
+   * sign-in and checkout URLs anywhere, and `main()` bails out before touching a
+   * frame too small to hold a form.
    *
-   * `<all_urls>` also covered `file://`, `ftp://` and every custom scheme; the
-   * pair below is limited to real web pages. On top of that:
-   *   - `excludeMatches` drops well-known mail / payment / identity origins that
-   *     can never contain a job application form;
-   *   - `excludeGlobs` drops sign-in and checkout URLs anywhere on the web;
-   *   - `main()` bails out before touching the page when the frame cannot hold a
-   *     form, and no page listener is registered on sign-in screens.
-   *
-   * The declarative registration is still what makes the inline "Fill" button
-   * possible at all: it has to react to `focusin` *before* the user has any way
-   * to click on the extension. See the migration notes at the bottom of this
-   * file for the activeTab / `scripting.executeScript` follow-up.
+   * Registration stays declarative rather than moving to `activeTab` +
+   * `scripting.executeScript`, because the inline "Fill" button has to react to
+   * `focusin` *before* the user has any way to click on the extension.
    */
   matches: ['http://*/*', 'https://*/*'],
   excludeMatches: [
@@ -89,11 +88,11 @@ export default defineContentScript({
 
     installMessageBridge(ctx);
 
-    // The inline button is the only thing that ever touches the page. It is not
-    // armed on sign-in screens at all (P0-4).
+    // The inline button is the only thing that ever touches the page, and it is
+    // not armed on sign-in screens at all.
     if (!looksLikeAuthPage()) setupInlineButton(ctx);
 
-    // NFR-4: everything we injected goes away with the page / the script.
+    // Everything we injected goes away with the page / the script.
     const teardown = () => {
       destroyInlineUi();
       removeAllHighlights();
@@ -125,23 +124,18 @@ function frameCanHoldAForm(): boolean {
 // ─── Messaging ────────────────────────────────────────────────────────────────
 
 /**
- * P0-5 — frame addressing, page half.
+ * Frame addressing, page half — the caller half is `entrypoints/ui/frames.ts`,
+ * which explains why the protocol is shaped this way. Two rules hold here:
  *
- * A request arrives as one broadcast to every frame of the tab (the caller has
- * no `frameId` to aim at, and getting one would cost the `webNavigation`
- * permission — NFR-2). Two rules make that work:
+ *   1. **a frame with nothing to contribute never answers**, so silence is the
+ *      normal outcome in frames that do not own the form;
+ *   2. a frame that does answer uses `chrome.runtime.sendMessage`, never
+ *      `sendResponse`, because Chrome hands the sender of a broadcast only the
+ *      first `sendResponse` and the top frame's "0 filled" would shadow the
+ *      iframe that actually holds the form.
  *
- *   1. **a frame that has nothing to contribute never answers**, so silence is
- *      the normal outcome in the frames that do not own the form;
- *   2. a frame that *does* answer replies with `chrome.runtime.sendMessage`
- *      instead of `sendResponse`. Chrome gives the sender of a broadcast only
- *      the first `sendResponse` — with LinkedIn / Greenhouse / Workable the form
- *      lives in an iframe while the top frame answers "0 filled" first, and the
- *      user was told nothing had been filled. On the runtime bus every frame is
- *      heard, and the caller learns which frame spoke from `sender.frameId`.
- *
- * The listener therefore always returns `false`: nothing here ever uses the
- * response channel.
+ * The listener therefore always returns `false`: nothing here uses the response
+ * channel.
  */
 function installMessageBridge(ctx: ContentScriptContext): void {
   const listener = (message: FrameRequest): boolean => {
@@ -166,8 +160,8 @@ function installMessageBridge(ctx: ContentScriptContext): void {
     }
 
     if (message.type === 'FILL_COVER_TEXT') {
-      // P1-12: insert only into a field we can justify, never into "the first
-      // textarea on the page" (which is usually search or a chat widget).
+      // Insert only into a field we can justify, never into "the first textarea
+      // on the page" — which is usually search or a chat widget.
       const target = resolveCoverTarget();
       if (!target) return false;
       setNativeValue(target, message.text);
@@ -272,12 +266,21 @@ function setupInlineButton(ctx: ContentScriptContext): void {
         `${summary.aiQuestions} open question${summary.aiQuestions > 1 ? 's' : ''} — use popup to answer`,
       );
     }
-    showToast(parts.join(' · '));
+    const noData = summary.noData ?? 0;
+    if (noData > 0) parts.push(`${noData} field${noData > 1 ? 's' : ''} we have no data for`);
+
+    // Every other counter describes something visible on the page (a green
+    // outline, a file box, a purple question). `noData` is invisible by
+    // construction — the field is empty because we had nothing — so it gets a
+    // second line naming the missing item and where to add it. Without this the
+    // first run of a fresh install is silent.
+    const hint = describeMissingData(summary.missingFields ?? []);
+    showToast(hint ? `${parts.join(' · ')}\n${hint}` : parts.join(' · '), hint ? HINT_TOAST_MS : undefined);
   };
 
   ctx.addEventListener(document, 'focusin', (e: FocusEvent) => {
     if (!isInlineButtonAnchor(e.target)) return;
-    // Recorded while the page still has focus — opening the popup blurs it (P1-12).
+    // Recorded while the page still has focus — opening the popup blurs it.
     rememberFocusedField(e.target);
     if (hideTimer !== null) {
       clearTimeout(hideTimer);
@@ -310,7 +313,10 @@ async function performFill(profileId: string): Promise<{
   }
   if (!profile) return null;
 
-  // Resolve cover letter template with job info placeholders
+  // No template → no text → the letter field is reported as `noData` and the
+  // user is told what to do about it. Deliberately NOT auto-generated or filled
+  // from a canned default: this text is submitted to an employer under the
+  // user's name, so it never appears without them having seen it.
   let coverLetterText = '';
   const [templates, settings] = await Promise.all([getCoverTemplates(), getSettings()]);
   if (templates.length > 0) {
@@ -318,11 +324,12 @@ async function performFill(profileId: string): Promise<{
     coverLetterText = templates[0].body
       .replace(/\{company\}/gi, jobInfo.company ?? '')
       .replace(/\{position\}/gi, jobInfo.position ?? '')
-      .replace(/\{source\}/gi, '');
+      .replace(/\{source\}/gi, resolveSource())
+      .trim();
   }
 
-  // FR-5.3: the fields heuristics could not name, collected during the pass that
-  // is about to run — no second enumeration of the page.
+  // The fields heuristics could not name, collected during the pass that is
+  // about to run — no second enumeration of the page.
   const unresolved: FieldFingerprint[] = [];
 
   const summary = fillPage(profile, {
@@ -341,7 +348,7 @@ async function performFill(profileId: string): Promise<{
     });
   }
 
-  // Collect open-question textareas so popup can trigger Groq answering
+  // Keep the open-question textareas addressable, so the popup can answer them.
   pendingQuestionEls.clear();
   const openQuestions: OpenQuestion[] = [];
   document.querySelectorAll<HTMLTextAreaElement>('textarea.__jobfill-ai').forEach((el, i) => {
@@ -354,13 +361,52 @@ async function performFill(profileId: string): Promise<{
   return { type: 'FILL_RESULT', summary, openQuestions };
 }
 
-// ─── FR-5.3 — LLM classification pass ─────────────────────────────────────────
+/**
+ * The `{source}` placeholder — "where I saw this posting". It used to be
+ * replaced with the empty string unconditionally, turning every "I found your ad
+ * on {source}" template into a sentence with a hole in it.
+ *
+ * Which host is the honest answer depends on where this frame is: an ATS form is
+ * routinely embedded in an iframe, where `location.hostname` is
+ * `boards.greenhouse.io` rather than the site the user is looking at. So the top
+ * document's host is asked for first, falling back to our own — which, for a
+ * form served straight from the ATS, is the right answer anyway.
+ */
+function resolveSource(): string {
+  if (isTopFrame()) return bareHost(location.hostname);
+
+  // Same-origin parent: readable directly.
+  try {
+    const top = window.top?.location.hostname;
+    if (top) return bareHost(top);
+  } catch {
+    // Cross-origin — expected, fall through.
+  }
+
+  // Cross-origin: `ancestorOrigins` is ordered parent-first, top-level last.
+  // Chrome and Safari only; `undefined` on Firefox, hence the guard.
+  const ancestors = location.ancestorOrigins;
+  if (ancestors && ancestors.length > 0) {
+    try {
+      return bareHost(new URL(ancestors[ancestors.length - 1]).hostname);
+    } catch {
+      // Opaque origin ("null") — not a URL, nothing to salvage.
+    }
+  }
+
+  return bareHost(location.hostname);
+}
+
+function bareHost(hostname: string): string {
+  return hostname.replace(/^www\./i, '');
+}
+
+// ─── LLM classification pass ──────────────────────────────────────────────────
 
 /**
  * One pass per frame at a time. A second Fill click while a request is in flight
- * would classify the same fingerprints again for the same answer, so it is
- * dropped — this is also the only bound on how often the feature can spend the
- * user's Groq quota.
+ * would classify the same fingerprints for the same answer, so it is dropped —
+ * this is also the only bound on how often the feature spends the user's quota.
  */
 let classificationInFlight = false;
 
@@ -368,13 +414,12 @@ let classificationInFlight = false;
  * The second pass: ask the worker to name the leftovers, fill what comes back,
  * tell the user on the page.
  *
- * **Why the page and not the popup.** A frame answers a fill broadcast within
- * milliseconds and `entrypoints/ui/frames.ts` closes its collection window
- * 400 ms later; a classification answer arrives seconds after that, when nothing
- * is listening for this request any more. So the second pass reports where the
- * user is actually looking — the amber highlights appear on the fields as they
- * are filled, and one toast says how many there were. The popup's counters stay
- * the heuristic snapshot they always were.
+ * It reports on the page, not in the popup, because a frame answers a fill
+ * broadcast within milliseconds and `frames.ts` closes its collection window
+ * 400 ms later — a classification answer arrives seconds after that, when
+ * nothing is listening for this request any more. So amber highlights appear on
+ * the fields as they are filled and one toast counts them; the popup's counters
+ * stay the heuristic snapshot they always were.
  */
 async function runClassificationPass(
   profile: Profile,
@@ -400,11 +445,17 @@ async function runClassificationPass(
 }
 
 /**
- * S-3: `fingerprints` are `serializeFingerprint` output and nothing else — no
- * profile values, no page body, not even the controls' current contents.
+ * `fingerprints` are `serializeFingerprint` output and nothing else — no profile
+ * values, no page body, not even the controls' current contents. The worker owns
+ * the API key, so it makes the request; `undefined` means "no templates", which
+ * is what every failure looks like from here.
  *
- * The worker owns the API key, so it makes the request; `undefined` means "no
- * classifications", which is what every failure looks like from here.
+ * **The answer is validated again on arrival.** `validateFieldTemplates` already
+ * ran in the worker on the way out of the model; it runs again here because this
+ * is the last place before a value is written into somebody's job application.
+ * Same function, same fingerprints, so a correct answer is unaffected — but a
+ * template naming a non-existent atom, or one aimed at a consent box, cannot
+ * reach the DOM even if everything upstream is wrong.
  */
 function requestClassification(fingerprints: string[]): Promise<Record<string, string> | undefined> {
   const message: ToBackgroundMessage = { type: 'CLASSIFY_FIELDS', fingerprints };
@@ -412,7 +463,7 @@ function requestClassification(fingerprints: string[]): Promise<Record<string, s
   // The callback form, not the promise one: `chrome.*` is callback-based on
   // Firefox (MV2), where the promise form would resolve to `undefined` and
   // quietly disable the feature. This never rejects — `lastError` (dead worker,
-  // invalidated context) is read and turned into "no classifications".
+  // invalidated context) is read and turned into "no templates".
   return new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(message, (response: FromBackgroundMessage | undefined) => {
@@ -420,7 +471,7 @@ function requestClassification(fingerprints: string[]): Promise<Record<string, s
           resolve(undefined);
           return;
         }
-        resolve(response.classifications);
+        resolve(validateFieldTemplates(response.templates, fingerprints));
       });
     } catch {
       resolve(undefined);
@@ -428,24 +479,3 @@ function requestClassification(fingerprints: string[]): Promise<Record<string, s
   });
 }
 
-/*
- * ── Follow-up: full activeTab / programmatic injection (NFR-2, option "a") ────
- *
- * Everything above still ships as a declarative content script, because the
- * inline button must exist before the user interacts with the extension. To go
- * all the way to `activeTab` + `chrome.scripting.executeScript`, three files
- * outside this stream have to change together:
- *
- *   1. entrypoints/content.ts — add `registration: 'runtime'` so WXT builds the
- *      script as an injectable asset instead of listing it in the manifest.
- *   2. entrypoints/background.ts — on `action.onClicked` / `commands.onCommand`
- *      / a popup request, call `chrome.scripting.executeScript({ target: { tabId,
- *      allFrames: true }, files: ['content-scripts/content.js'] })`, deduplicate
- *      injections per tab, and only then forward FILL_FORM.
- *   3. entrypoints/popup/App.tsx — ask the background to inject first, await it,
- *      and address the resulting frames explicitly (see below).
- *
- * The trade-off to accept with that move: the "⚡ Fill" affordance can no longer
- * appear on first focus — it would only appear after the user has opened the
- * popup (or pressed the shortcut) once per tab.
- */

@@ -41,7 +41,9 @@ vi.stubGlobal('chrome', { storage: { sync, local } });
 const syncStore = await import('../shared/storage/sync');
 const localStore = await import('../shared/storage/local');
 const retryQueue = await import('../shared/storage/retryQueue');
-const { normalizeSyncData, SyncValidationError } = await import('../shared/storage/validate');
+const { emptySyncData, normalizeSyncData, SyncValidationError } = await import(
+  '../shared/storage/validate'
+);
 const { createEmptyProfile, DEFAULT_SETTINGS } = await import('../shared/types');
 
 beforeEach(async () => {
@@ -49,8 +51,6 @@ beforeEach(async () => {
   local.data = {};
   await syncStore.clearSyncData();
 });
-
-// ─── Layout & basic round-trips ───────────────────────────────────────────────
 
 describe('sync storage layout', () => {
   it('stores each profile under its own key (P1-8)', async () => {
@@ -146,13 +146,11 @@ describe('legacy blob migration', () => {
     expect(await syncStore.getSettings()).toEqual({
       highlightDurationMs: 1000,
       logBackend: 'notion',
-      // Absent from the pre-FR-5.3 blob → off, like on a fresh install.
+      // Absent from the old blob → off, like on a fresh install.
       llmFieldClassification: false,
     });
   });
 });
-
-// ─── Import validation (P1-7 / FR-1.4) ────────────────────────────────────────
 
 describe('importSyncData validation', () => {
   const valid = {
@@ -259,8 +257,6 @@ describe('normalizeSyncData (lenient mode)', () => {
   });
 });
 
-// ─── FR-5.3 opt-in ────────────────────────────────────────────────────────────
-
 describe('settings.llmFieldClassification', () => {
   it('is off on a fresh install', async () => {
     expect(DEFAULT_SETTINGS.llmFieldClassification).toBe(false);
@@ -309,8 +305,6 @@ describe('settings.llmFieldClassification', () => {
   });
 });
 
-// ─── Quota (FR-1.2) ───────────────────────────────────────────────────────────
-
 describe('getStorageUsage', () => {
   it('reports percent and the 80% warning flag', async () => {
     await syncStore.saveProfiles([createEmptyProfile({ label: 'A' })]);
@@ -326,8 +320,6 @@ describe('getStorageUsage', () => {
     expect(await syncStore.getStorageUsagePercent()).toBe(high.percent);
   });
 });
-
-// ─── Application log ──────────────────────────────────────────────────────────
 
 describe('application log', () => {
   const entry = (id: string) => ({
@@ -374,8 +366,6 @@ describe('application log', () => {
     expect(await localStore.getApplicationLog()).toEqual([]);
   });
 });
-
-// ─── Retry queue (FR-6.3 / NFR-5) ─────────────────────────────────────────────
 
 describe('remote log retry queue', () => {
   const task = (id: string, overrides = {}) => ({
@@ -427,7 +417,756 @@ describe('remote log retry queue', () => {
     expect(await retryQueue.getNextDueAt()).toBeNull();
   });
 
+  it('ignores exhausted tasks when scheduling, so the alarm cannot spin', async () => {
+    // `runTask` clears a task once it gives up, but the worker can be evicted
+    // between writing the entry status and clearing the queue. If the scheduler
+    // still counted that leftover as due, it would re-arm forever for work
+    // `getDueTasks` declines to hand out.
+    await retryQueue.enqueueRetry(task('exhausted', { attempts: retryQueue.MAX_ATTEMPTS }));
+
+    expect(await retryQueue.getDueTasks()).toEqual([]);
+    expect(await retryQueue.getNextDueAt()).toBeNull();
+  });
+
+  it('schedules for the earliest task that can still run, not the earliest stored', async () => {
+    const soon = Date.now() + 1000;
+    await retryQueue.enqueueRetry(
+      task('exhausted', { nextAttemptAt: soon, attempts: retryQueue.MAX_ATTEMPTS }),
+    );
+    await retryQueue.enqueueRetry(task('live', { nextAttemptAt: soon + 5000 }));
+
+    expect(await retryQueue.getNextDueAt()).toBe(soon + 5000);
+  });
+
   it('allows exactly one retry (FR-6.3)', () => {
     expect(retryQueue.MAX_ATTEMPTS).toBe(2);
+  });
+
+  it('removes a single task and leaves the rest of the queue alone', async () => {
+    await retryQueue.enqueueRetry(task('a'));
+    await retryQueue.enqueueRetry(task('b'));
+
+    await retryQueue.removeRetry('a');
+    expect((await retryQueue.getRetryQueue()).map((t) => t.entryId)).toEqual(['b']);
+
+    // Removing something that is not there is a no-op, not an error: the drain
+    // loop calls this after every successful write, queued or not.
+    await retryQueue.removeRetry('never-queued');
+    expect((await retryQueue.getRetryQueue()).map((t) => t.entryId)).toEqual(['b']);
+  });
+
+  it('ignores stored records that are not tasks', async () => {
+    local.data['remote_log_queue'] = [
+      task('good'),
+      null,
+      'nonsense',
+      { entryId: 'no-attempts' },
+      { attempts: 1 },
+    ];
+    expect((await retryQueue.getRetryQueue()).map((t) => t.entryId)).toEqual(['good']);
+
+    local.data['remote_log_queue'] = 'not an array';
+    expect(await retryQueue.getRetryQueue()).toEqual([]);
+  });
+
+  it('does not wedge the queue when one write fails', async () => {
+    const spy = vi.spyOn(local, 'set').mockRejectedValueOnce(new Error('QUOTA_BYTES exceeded'));
+    await expect(retryQueue.enqueueRetry(task('a'))).rejects.toThrow(/QUOTA_BYTES/);
+    spy.mockRestore();
+
+    await retryQueue.enqueueRetry(task('b'));
+    expect((await retryQueue.getRetryQueue()).map((t) => t.entryId)).toEqual(['b']);
+  });
+});
+
+/**
+ * `sync` is mirrored to Google's servers and to every machine the browser
+ * profile is signed into, and deleting a key later undoes neither. So API keys,
+ * tokens and Web App URLs go into `chrome.storage.local` and nowhere else.
+ *
+ * Worth a test of its own rather than trusting the call sites: every one of the
+ * writers below is a two-line function that would look equally correct pointing
+ * at the wrong area.
+ */
+describe('S-1 — secrets never reach chrome.storage.sync', () => {
+  const SECRETS = {
+    apiKey: 'gsk_test_not_a_real_key',
+    notionToken: 'secret_notionintegrationtoken',
+    notionDb: 'a1b2c3d4e5f6',
+    sheets: 'https://script.google.com/macros/s/AKfyPRIVATE/exec',
+    customBaseUrl: 'https://llm.internal.example/v1',
+  };
+
+  async function storeEverySecret(): Promise<void> {
+    await localStore.setGroqApiKey(SECRETS.apiKey);
+    await localStore.setLlmProvider('custom', SECRETS.customBaseUrl);
+    await localStore.setNotionCredentials(SECRETS.notionToken, SECRETS.notionDb);
+    await localStore.setSheetsEndpoint(SECRETS.sheets);
+  }
+
+  it('puts every credential in local and no trace of it in sync', async () => {
+    await storeEverySecret();
+    // Do everything that writes to sync, so nothing can smuggle a secret along.
+    await syncStore.saveProfiles([createEmptyProfile({ label: 'A', email: 'a@b.c' })]);
+    await syncStore.saveCoverTemplates([{ id: 't1', label: 'T', body: 'Dear {company}' }]);
+    await syncStore.saveSettings({ logBackend: 'notion' });
+
+    const synced = JSON.stringify(sync.data);
+    for (const secret of Object.values(SECRETS)) expect(synced).not.toContain(secret);
+
+    // Not just the values — the keys are not there either, empty or otherwise.
+    expect(Object.keys(sync.data).every((k) => k.startsWith('jobfill.'))).toBe(true);
+    expect(JSON.stringify(local.data)).toContain(SECRETS.apiKey);
+  });
+
+  it('keeps them out of the export file, which the user mails to themselves', async () => {
+    await storeEverySecret();
+    await syncStore.saveProfiles([createEmptyProfile({ label: 'A' })]);
+
+    const dump = await syncStore.exportSyncData();
+    for (const secret of Object.values(SECRETS)) expect(dump).not.toContain(secret);
+    expect(Object.keys(JSON.parse(dump)).sort()).toEqual([
+      'activeProfileId',
+      'coverTemplates',
+      'profiles',
+      'schemaVersion',
+      'settings',
+    ]);
+  });
+
+  it('leaves them untouched when the synced dataset is reset', async () => {
+    await storeEverySecret();
+    await syncStore.saveProfiles([createEmptyProfile({ label: 'A' })]);
+    // A device that has not opened the extension since the split still carries
+    // the old blob; "reset" has to take that with it or it comes straight back.
+    sync.data['jobfill_sync'] = { schemaVersion: 1, profiles: [] };
+
+    await syncStore.clearSyncData();
+    expect(sync.data['jobfill_sync']).toBeUndefined();
+
+    expect(await syncStore.getProfiles()).toEqual([]);
+    expect(await syncStore.getSettings()).toEqual(DEFAULT_SETTINGS);
+    // "Reset settings" is not "log me out of my own API key".
+    expect(await localStore.getGroqApiKey()).toBe(SECRETS.apiKey);
+    expect(await localStore.getSheetsEndpoint()).toBe(SECRETS.sheets);
+    expect((await localStore.getNotionCredentials()).notionToken).toBe(SECRETS.notionToken);
+  });
+});
+
+// ─── LLM credentials & provider selection (local.ts) ──────────────────────────
+
+describe('LLM credentials in chrome.storage.local', () => {
+  it('round-trips the API key under the key an existing install already uses', async () => {
+    expect(await localStore.getGroqApiKey()).toBeUndefined();
+    await localStore.setGroqApiKey('gsk_secret');
+    expect(await localStore.getGroqApiKey()).toBe('gsk_secret');
+    // Renaming this key would silently log every current user out of their key.
+    expect(local.data['groq_api_key']).toBe('gsk_secret');
+  });
+
+  /**
+   * The implicit migration: nothing is written when the provider setting is
+   * introduced, so "no provider stored" has to keep answering what it answered
+   * before — including the model id, which is Groq-shaped and means nothing
+   * anywhere else.
+   */
+  it('means Groq, with its old URL and old default model, when nothing is stored', async () => {
+    expect(await localStore.getLlmProvider()).toBe('groq');
+    expect(await localStore.getGroqModel()).toBe('llama-3.3-70b-versatile');
+    expect(await localStore.getCustomBaseUrl()).toBe('');
+
+    expect(await localStore.getLlmEndpoint()).toMatchObject({
+      providerId: 'groq',
+      label: 'Groq',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: 'llama-3.3-70b-versatile',
+      apiKey: '',
+    });
+  });
+
+  it('reads junk in the provider key as Groq rather than as a broken install', async () => {
+    local.data['llm_provider'] = 'altavista';
+    expect(await localStore.getLlmProvider()).toBe('groq');
+    expect((await localStore.getLlmEndpoint()).baseUrl).toBe('https://api.groq.com/openai/v1');
+    expect(await localStore.getGroqModel()).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('defaults the model per provider, and prefers a stored one', async () => {
+    await localStore.setLlmProvider('openrouter');
+    expect(await localStore.getGroqModel()).toBe('meta-llama/llama-3.3-70b-instruct');
+
+    await localStore.setGroqModel('  vendor/typed-by-hand  ');
+    expect(await localStore.getGroqModel()).toBe('vendor/typed-by-hand');
+
+    // A field the user emptied is not a model id — fall back rather than 404.
+    await localStore.setGroqModel('   ');
+    expect(await localStore.getGroqModel()).toBe('meta-llama/llama-3.3-70b-instruct');
+  });
+
+  it('keeps a custom base URL only while the provider is custom', async () => {
+    await localStore.setLlmProvider('custom', 'https://llm.internal/v1');
+    expect(await localStore.getLlmProvider()).toBe('custom');
+    expect(await localStore.getCustomBaseUrl()).toBe('https://llm.internal/v1');
+    expect((await localStore.getLlmEndpoint()).baseUrl).toBe('https://llm.internal/v1');
+
+    // Switching away clears it: a stale URL that comes back on the next switch
+    // is a request going somewhere the user no longer expects.
+    await localStore.setLlmProvider('groq');
+    expect(await localStore.getCustomBaseUrl()).toBe('');
+    expect(local.data['llm_base_url']).toBe('');
+
+    await localStore.setLlmProvider('custom');
+    expect((await localStore.getLlmEndpoint()).baseUrl).toBe('');
+  });
+
+  it('assembles the whole endpoint in one storage round-trip', async () => {
+    await localStore.setGroqApiKey('sk-or-v1-abc');
+    await localStore.setLlmProvider('openrouter');
+    await localStore.setGroqModel('vendor/model');
+
+    const spy = vi.spyOn(local, 'get');
+    const endpoint = await localStore.getLlmEndpoint();
+    // One read, not four: a partial read is how a stale custom URL or a missing
+    // default creeps into a request.
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+
+    expect(endpoint).toMatchObject({
+      providerId: 'openrouter',
+      label: 'OpenRouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-v1-abc',
+      model: 'vendor/model',
+    });
+    expect(endpoint.headers).toEqual({ 'X-Title': 'JobFill' });
+  });
+});
+
+describe('remote-logging credentials', () => {
+  it('round-trips the Notion token and database id together', async () => {
+    expect(await localStore.getNotionCredentials()).toEqual({
+      notionToken: undefined,
+      notionDatabaseId: undefined,
+    });
+
+    await localStore.setNotionCredentials('secret_abc', 'db-1');
+    expect(await localStore.getNotionCredentials()).toEqual({
+      notionToken: 'secret_abc',
+      notionDatabaseId: 'db-1',
+    });
+  });
+
+  it('round-trips the Sheets Web App URL', async () => {
+    expect(await localStore.getSheetsEndpoint()).toBeUndefined();
+    await localStore.setSheetsEndpoint('https://script.google.com/macros/s/x/exec');
+    expect(await localStore.getSheetsEndpoint()).toBe('https://script.google.com/macros/s/x/exec');
+  });
+});
+
+describe('application log — the rest of the surface', () => {
+  const entry = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    timestamp: new Date().toISOString(),
+    company: 'ACME',
+    position: 'Dev',
+    url: 'https://example.com',
+    profileId: 'p1',
+    status: 'submitted' as const,
+    remoteSync: 'pending' as const,
+    ...overrides,
+  });
+
+  it('replaces an entry instead of listing the same application twice', async () => {
+    await localStore.appendLogEntry(entry('a'));
+    await localStore.appendLogEntry(entry('b'));
+    await localStore.appendLogEntry(entry('a', { company: 'ACME (retried)' }));
+
+    const log = await localStore.getApplicationLog();
+    expect(log.map((e) => e.id)).toEqual(['a', 'b']);
+    expect(log[0].company).toBe('ACME (retried)');
+  });
+
+  it('ignores a status update for an id that is not in the journal', async () => {
+    await localStore.appendLogEntry(entry('a'));
+    await localStore.updateLogEntrySync('trimmed-away', 'failed');
+
+    expect((await localStore.getLogEntry('a'))?.remoteSync).toBe('pending');
+    expect(await localStore.getLogEntry('trimmed-away')).toBeUndefined();
+  });
+
+  it('drops stored records that are not entries', async () => {
+    local.data['application_log'] = [entry('ok'), null, 42, { noId: true }, { id: 7 }];
+    expect((await localStore.getApplicationLog()).map((e) => e.id)).toEqual(['ok']);
+  });
+
+  it('clears the journal', async () => {
+    await localStore.appendLogEntry(entry('a'));
+    await localStore.clearApplicationLog();
+    expect(await localStore.getApplicationLog()).toEqual([]);
+    expect(local.data['application_log']).toEqual([]);
+  });
+
+  it('exports the journal key so a storage listener can recognise its writes', async () => {
+    await localStore.appendLogEntry(entry('a'));
+    expect(local.data[localStore.APPLICATION_LOG_KEY]).toHaveLength(1);
+  });
+
+  it('does not wedge the write chain when one journal write fails', async () => {
+    const spy = vi.spyOn(local, 'set').mockRejectedValueOnce(new Error('QUOTA_BYTES exceeded'));
+    await expect(localStore.appendLogEntry(entry('boom'))).rejects.toThrow(/QUOTA_BYTES/);
+    spy.mockRestore();
+
+    await localStore.appendLogEntry(entry('after'));
+    expect((await localStore.getApplicationLog()).map((e) => e.id)).toEqual(['after']);
+  });
+});
+
+describe('cover templates', () => {
+  const tpl = (id: string, body = `Dear {company}, ${id}`) => ({ id, label: id.toUpperCase(), body });
+
+  it('stores each template under its own key and round-trips the order', async () => {
+    await syncStore.saveCoverTemplates([tpl('a'), tpl('b')]);
+
+    expect(sync.data['jobfill.template.a']).toMatchObject({ label: 'A' });
+    expect(sync.data['jobfill.templateIds']).toEqual(['a', 'b']);
+    expect((await syncStore.getCoverTemplates()).map((t) => t.id)).toEqual(['a', 'b']);
+  });
+
+  it('does not rewrite unchanged templates', async () => {
+    await syncStore.saveCoverTemplates([tpl('a')]);
+
+    const spy = vi.spyOn(sync, 'set');
+    await syncStore.saveCoverTemplates([tpl('a')]);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('removes the key of a template dropped from the list', async () => {
+    await syncStore.saveCoverTemplates([tpl('a'), tpl('b')]);
+    await syncStore.saveCoverTemplates([tpl('b')]);
+
+    expect(sync.data['jobfill.template.a']).toBeUndefined();
+    expect((await syncStore.getCoverTemplates()).map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('upserts a new template and edits an existing one in place', async () => {
+    await syncStore.upsertCoverTemplate(tpl('a'));
+    expect(sync.data['jobfill.templateIds']).toEqual(['a']);
+
+    await syncStore.upsertCoverTemplate(tpl('a', 'edited body'));
+    expect(sync.data['jobfill.templateIds']).toEqual(['a']);
+    expect((await syncStore.getCoverTemplates())[0].body).toBe('edited body');
+
+    // An unchanged upsert costs no write quota either.
+    const spy = vi.spyOn(sync, 'set');
+    await syncStore.upsertCoverTemplate(tpl('a', 'edited body'));
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('two concurrent edits of different templates both survive', async () => {
+    await syncStore.saveCoverTemplates([tpl('a'), tpl('b')]);
+
+    await Promise.all([
+      syncStore.upsertCoverTemplate(tpl('a', 'A body')),
+      syncStore.upsertCoverTemplate(tpl('b', 'B body')),
+    ]);
+
+    const stored = await syncStore.getCoverTemplates();
+    expect(stored.find((t) => t.id === 'a')?.body).toBe('A body');
+    expect(stored.find((t) => t.id === 'b')?.body).toBe('B body');
+  });
+
+  it('deletes one template without touching the others', async () => {
+    await syncStore.saveCoverTemplates([tpl('a'), tpl('b')]);
+    await syncStore.deleteCoverTemplate('a');
+
+    expect(sync.data['jobfill.template.a']).toBeUndefined();
+    expect((await syncStore.getCoverTemplates()).map((t) => t.id)).toEqual(['b']);
+
+    // …and deleting from an empty store is a no-op, not a crash.
+    sync.data = {};
+    await syncStore.deleteCoverTemplate('ghost');
+    expect(await syncStore.getCoverTemplates()).toEqual([]);
+  });
+});
+
+describe('snapshot reads', () => {
+  it('getSyncSnapshot answers with everything in one object', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    await syncStore.saveProfiles([a]);
+    await syncStore.saveCoverTemplates([{ id: 't', label: 'T', body: 'b' }]);
+    await syncStore.saveSettings({ highlightDurationMs: 1234 });
+
+    expect(await syncStore.getSyncSnapshot()).toEqual({
+      schemaVersion: 1,
+      profiles: [a],
+      activeProfileId: a.id,
+      coverTemplates: [{ id: 't', label: 'T', body: 'b' }],
+      settings: { ...DEFAULT_SETTINGS, highlightDurationMs: 1234 },
+    });
+  });
+
+  it('getActiveProfile resolves the pointer to the profile itself', async () => {
+    const a = createEmptyProfile({ label: 'A', firstName: 'Ada' });
+    const b = createEmptyProfile({ label: 'B', firstName: 'Grace' });
+    await syncStore.saveProfiles([a, b]);
+
+    expect((await syncStore.getActiveProfile())?.firstName).toBe('Ada');
+    await syncStore.setActiveProfileId(b.id);
+    expect((await syncStore.getActiveProfile())?.firstName).toBe('Grace');
+  });
+
+  it('repoints a dangling active pointer at read time', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    await syncStore.saveProfiles([a]);
+    sync.data['jobfill.activeProfileId'] = 'deleted-on-another-device';
+
+    // Sync is eventually consistent: the pointer can outlive the profile it
+    // names. The popup still has to open on *something*.
+    expect(await syncStore.getActiveProfileId()).toBe(a.id);
+    expect((await syncStore.getActiveProfile())?.id).toBe(a.id);
+
+    sync.data['jobfill.activeProfileId'] = { not: 'a string' };
+    expect(await syncStore.getActiveProfileId()).toBe(a.id);
+  });
+
+  it('answers with no profiles rather than throwing on a corrupted order list', async () => {
+    sync.data['jobfill.profileIds'] = 'not an array';
+    expect(await syncStore.getProfiles()).toEqual([]);
+    expect(await syncStore.getActiveProfileId()).toBe('');
+
+    sync.data['jobfill.profileIds'] = ['p1', 42, null];
+    sync.data['jobfill.profile.p1'] = { id: 'p1', label: 'Real' };
+    // 42 names no key, and `jobfill.profile.undefined` is not a profile either.
+    expect((await syncStore.getProfiles()).map((p) => p.label)).toEqual(['Real']);
+  });
+
+  it('skips an id in the order list whose profile key never arrived', async () => {
+    // `chrome.storage.sync` delivers keys independently, so the order list can
+    // legitimately mention a profile whose own item has not landed yet. Showing
+    // a blank profile for it would be worse than showing it a moment later.
+    const a = createEmptyProfile({ label: 'Arrived' });
+    await syncStore.saveProfiles([a]);
+    sync.data['jobfill.profileIds'] = [a.id, 'still-in-flight'];
+
+    expect((await syncStore.getProfiles()).map((p) => p.label)).toEqual(['Arrived']);
+  });
+});
+
+describe('profile writes that remove things', () => {
+  it('deletes the keys of profiles dropped from a full save and repoints the active one', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    const b = createEmptyProfile({ label: 'B' });
+    await syncStore.saveProfiles([a, b]);
+    await syncStore.setActiveProfileId(a.id);
+
+    await syncStore.saveProfiles([b]);
+
+    expect(sync.data[`jobfill.profile.${a.id}`]).toBeUndefined();
+    expect(sync.data['jobfill.profileIds']).toEqual([b.id]);
+    expect(await syncStore.getActiveProfileId()).toBe(b.id);
+  });
+
+  it('empties the active pointer when the last profile goes', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    await syncStore.saveProfiles([a]);
+    await syncStore.setActiveProfileId(a.id);
+
+    await syncStore.deleteProfile(a.id);
+
+    expect(sync.data['jobfill.activeProfileId']).toBe('');
+    expect(await syncStore.getProfiles()).toEqual([]);
+  });
+
+  it('empties the active pointer when a save removes every profile', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    await syncStore.saveProfiles([a]);
+    await syncStore.setActiveProfileId(a.id);
+
+    await syncStore.saveProfiles([]);
+
+    expect(sync.data['jobfill.activeProfileId']).toBe('');
+    expect(sync.data[`jobfill.profile.${a.id}`]).toBeUndefined();
+  });
+
+  it('deleting from a store that has no order list is a no-op', async () => {
+    sync.data = {};
+    await syncStore.deleteProfile('ghost');
+    expect(await syncStore.getProfiles()).toEqual([]);
+  });
+
+  it('deleting a profile that is not the active one leaves the pointer alone', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    const b = createEmptyProfile({ label: 'B' });
+    await syncStore.saveProfiles([a, b]);
+    await syncStore.setActiveProfileId(a.id);
+
+    await syncStore.deleteProfile(b.id);
+    expect(await syncStore.getActiveProfileId()).toBe(a.id);
+  });
+
+  it('upsert appends a profile the order list has never seen', async () => {
+    const a = createEmptyProfile({ label: 'A' });
+    const b = createEmptyProfile({ label: 'B' });
+    await syncStore.upsertProfile(a);
+    await syncStore.upsertProfile(b);
+
+    expect(sync.data['jobfill.profileIds']).toEqual([a.id, b.id]);
+    expect((await syncStore.getProfiles()).map((p) => p.label)).toEqual(['A', 'B']);
+
+    const spy = vi.spyOn(sync, 'set');
+    await syncStore.upsertProfile(b);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('does not wedge the write chain when one save fails', async () => {
+    const spy = vi.spyOn(sync, 'set').mockRejectedValueOnce(new Error('QUOTA_BYTES_PER_ITEM'));
+    await expect(syncStore.saveSettings({ logBackend: 'sheets' })).rejects.toThrow(/QUOTA_BYTES/);
+    spy.mockRestore();
+
+    await syncStore.saveSettings({ logBackend: 'notion' });
+    expect((await syncStore.getSettings()).logBackend).toBe('notion');
+  });
+});
+
+describe('legacy blob migration, the awkward cases', () => {
+  const legacyBlob = (id: string) => ({
+    schemaVersion: 1,
+    profiles: [{ ...createEmptyProfile({ label: 'Old' }), id }],
+    activeProfileId: id,
+    coverTemplates: [],
+    settings: { highlightDurationMs: 1000, logBackend: 'off' },
+  });
+
+  it('drops the blob without overwriting an already-split dataset', async () => {
+    // Two devices, one upgraded first: the blob is still on the wire while the
+    // new keys are already authoritative, and re-applying it would undo
+    // everything done since. Both layouts must be seeded before the first read —
+    // the only moment the migration can see them.
+    const current = createEmptyProfile({ label: 'Current' });
+    sync.data['jobfill.profileIds'] = [current.id];
+    sync.data[`jobfill.profile.${current.id}`] = current;
+    sync.data['jobfill.activeProfileId'] = current.id;
+    sync.data['jobfill_sync'] = legacyBlob('legacy-1');
+
+    expect((await syncStore.getProfiles()).map((p) => p.label)).toEqual(['Current']);
+    expect(sync.data['jobfill_sync']).toBeUndefined();
+  });
+
+  it('repairs a corrupted blob rather than refusing to boot', async () => {
+    sync.data['jobfill_sync'] = { schemaVersion: 1, profiles: 'nonsense' };
+    expect(await syncStore.getProfiles()).toEqual([]);
+    expect(sync.data['jobfill_sync']).toBeUndefined();
+  });
+
+  it('retries after a failed read instead of caching the failure forever', async () => {
+    sync.data['jobfill_sync'] = legacyBlob('m1');
+
+    const spy = vi.spyOn(sync, 'get').mockRejectedValueOnce(new Error('storage offline'));
+    await expect(syncStore.getProfiles()).rejects.toThrow('storage offline');
+    spy.mockRestore();
+
+    // A transient failure must not leave the extension permanently unmigrated.
+    expect((await syncStore.getProfiles()).map((p) => p.id)).toEqual(['m1']);
+    expect(sync.data['jobfill_sync']).toBeUndefined();
+  });
+});
+
+describe('import replaces the dataset rather than merging into it', () => {
+  it('removes the profiles and templates that were there before', async () => {
+    const old = createEmptyProfile({ label: 'Before' });
+    await syncStore.saveProfiles([old]);
+    await syncStore.saveCoverTemplates([{ id: 'old-t', label: 'Old', body: 'x' }]);
+
+    await syncStore.importSyncData(
+      JSON.stringify({
+        schemaVersion: 1,
+        profiles: [{ ...createEmptyProfile({ label: 'After' }), id: 'new-p' }],
+        activeProfileId: 'new-p',
+        coverTemplates: [{ id: 'new-t', label: 'New', body: 'y' }],
+        settings: { highlightDurationMs: 3000, logBackend: 'off' },
+      }),
+    );
+
+    expect(sync.data[`jobfill.profile.${old.id}`]).toBeUndefined();
+    expect(sync.data['jobfill.template.old-t']).toBeUndefined();
+    expect((await syncStore.getProfiles()).map((p) => p.label)).toEqual(['After']);
+    expect((await syncStore.getCoverTemplates()).map((t) => t.id)).toEqual(['new-t']);
+  });
+
+  it('rejects a file that is not an object at all', async () => {
+    await expect(syncStore.importSyncData('"just a string"')).rejects.toThrow(
+      /expected a JobFill export object, got string/,
+    );
+    await expect(syncStore.importSyncData('[]')).rejects.toThrow(SyncValidationError);
+  });
+});
+
+describe('getStorageUsage when the browser is unhelpful', () => {
+  it('reports zero rather than failing when getBytesInUse throws', async () => {
+    const spy = vi.spyOn(sync, 'getBytesInUse').mockRejectedValueOnce(new Error('unavailable'));
+    const usage = await syncStore.getStorageUsage();
+    spy.mockRestore();
+
+    // A quota reading is a hint in the UI; it must never be the reason a save
+    // or a settings page fails to render.
+    expect(usage).toEqual({ bytes: 0, quotaBytes: 102_400, percent: 0, warn: false });
+  });
+
+  it('falls back to the documented 100 KB when QUOTA_BYTES is missing', async () => {
+    const original = sync.QUOTA_BYTES;
+    Reflect.deleteProperty(sync, 'QUOTA_BYTES');
+    try {
+      sync.data['bulk'] = 'x'.repeat(90_000);
+      const usage = await syncStore.getStorageUsage();
+      expect(usage.quotaBytes).toBe(102_400);
+      expect(usage.warn).toBe(true);
+    } finally {
+      sync.QUOTA_BYTES = original;
+    }
+  });
+
+  it('does not divide by a zero quota', async () => {
+    const original = sync.QUOTA_BYTES;
+    sync.QUOTA_BYTES = 0;
+    try {
+      const usage = await syncStore.getStorageUsage();
+      expect(usage.percent).toBe(0);
+      expect(usage.warn).toBe(false);
+    } finally {
+      sync.QUOTA_BYTES = original;
+    }
+  });
+
+  it('warns at exactly the FR-1.2 threshold, not one byte later', async () => {
+    sync.data = {};
+    // `getBytesInUse` here is the JSON length of the area, so this is exact.
+    sync.data['bulk'] = 'x'.repeat(Math.round(102_400 * 0.8) - 20);
+    const usage = await syncStore.getStorageUsage();
+    expect(usage.percent).toBe(syncStore.SYNC_QUOTA_WARN_PERCENT);
+    expect(usage.warn).toBe(true);
+  });
+});
+
+// ─── validate.ts — repairs, warnings and refusals ─────────────────────────────
+
+describe('normalizeSyncData repairs a survivable file', () => {
+  const base = { schemaVersion: 1, profiles: [], coverTemplates: [] };
+
+  it('coerces scalars a hand-edited file can contain', () => {
+    const { data, issues } = normalizeSyncData({
+      ...base,
+      profiles: [{ id: 'p1', label: 'Ok', phone: 420123456789, workPermit: true, city: null }],
+    });
+
+    expect(data.profiles[0].phone).toBe('420123456789');
+    expect(data.profiles[0].workPermit).toBe('true');
+    // `null` is "not filled in", not a broken value — no warning for it.
+    expect(data.profiles[0].city).toBe('');
+    expect(issues).toEqual([]);
+  });
+
+  it('gives a profile without an id one, and a label to go with it', () => {
+    const { data } = normalizeSyncData({ ...base, profiles: [{ firstName: 'Ada' }] });
+    expect(data.profiles[0].id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(data.profiles[0].label).toBe('Imported profile');
+    // …and the active pointer follows the profile that now exists.
+    expect(data.activeProfileId).toBe(data.profiles[0].id);
+  });
+
+  it('skips a template that is not an object and names the entry', () => {
+    const { data, issues } = normalizeSyncData({
+      ...base,
+      coverTemplates: ['garbage', { body: 'Dear {company}' }],
+    });
+
+    expect(data.coverTemplates).toHaveLength(1);
+    expect(data.coverTemplates[0].label).toBe('Imported template');
+    expect(data.coverTemplates[0].id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 'coverTemplates[0]', severity: 'warning' }),
+    );
+  });
+
+  it('replaces settings that are not an object, and says so', () => {
+    const { data, issues } = normalizeSyncData({ ...base, settings: 'off please' });
+    expect(data.settings).toEqual(DEFAULT_SETTINGS);
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 'settings', severity: 'error' }),
+    );
+    // A `null` settings item is a fresh install, not a broken one.
+    expect(normalizeSyncData({ ...base, settings: null }).issues).toEqual([]);
+  });
+
+  it('clamps the highlight duration and warns about a non-number', () => {
+    const clamp = (highlightDurationMs: unknown) =>
+      normalizeSyncData({ ...base, settings: { highlightDurationMs } }).data.settings
+        .highlightDurationMs;
+
+    expect(clamp(999_999)).toBe(60_000);
+    expect(clamp(-5)).toBe(0);
+    expect(clamp(1234.6)).toBe(1235);
+    expect(clamp(Number.NaN)).toBe(DEFAULT_SETTINGS.highlightDurationMs);
+
+    const { issues } = normalizeSyncData({ ...base, settings: { highlightDurationMs: 'fast' } });
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 'settings.highlightDurationMs', severity: 'warning' }),
+    );
+  });
+
+  it('warns about an activeProfileId that is not a string, then repoints it', () => {
+    const { data, issues } = normalizeSyncData({
+      ...base,
+      profiles: [{ id: 'p1', label: 'Ok' }],
+      activeProfileId: 42,
+    });
+
+    expect(data.activeProfileId).toBe('p1');
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 'activeProfileId', severity: 'warning' }),
+    );
+
+    // …and `null` is simply "unset", which is not worth a warning.
+    expect(
+      normalizeSyncData({ ...base, profiles: [{ id: 'p1' }], activeProfileId: null }).issues,
+    ).toEqual([]);
+  });
+
+  it('names the type it actually got for a broken schemaVersion', () => {
+    for (const [version, described] of [
+      [null, 'null'],
+      [undefined, 'undefined'],
+      ['1', 'string'],
+      [[], 'array'],
+      [1.5, 'number'],
+      [0, 'number'],
+    ] as const) {
+      const { issues } = normalizeSyncData({ ...base, schemaVersion: version });
+      expect(issues[0]).toMatchObject({ path: 'schemaVersion', severity: 'error' });
+      expect(issues[0].message).toContain(described);
+    }
+  });
+
+  it('renders every error into the message a user is shown', () => {
+    const error = new SyncValidationError([
+      { path: 'profiles', message: 'expected an array, got string', severity: 'error' },
+      { path: 'profiles[0].city', message: 'field cleared', severity: 'warning' },
+    ]);
+    expect(error.message).toContain('• profiles: expected an array, got string');
+    // Warnings are repairs, not reasons to refuse the file — they stay out.
+    expect(error.message).not.toContain('field cleared');
+  });
+
+  it('emptySyncData is what a fresh install reads', async () => {
+    expect(emptySyncData()).toEqual({
+      schemaVersion: 1,
+      profiles: [],
+      activeProfileId: '',
+      coverTemplates: [],
+      settings: DEFAULT_SETTINGS,
+    });
+    expect(await syncStore.getSyncSnapshot()).toEqual(emptySyncData());
   });
 });
