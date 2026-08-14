@@ -98,8 +98,8 @@ function collectText(el: Element | null | undefined): string {
 }
 
 /**
- * P1-5: `aria-labelledby` / `aria-describedby` hold a space separated *list* of IDs.
- * Resolving the whole attribute with getElementById returned null for the
+ * `aria-labelledby` / `aria-describedby` hold a space-separated *list* of IDs.
+ * Resolving the whole attribute with `getElementById` returned null for the
  * `aria-labelledby="fieldLabel requiredMarker"` pattern used by Workday and
  * Greenhouse, silently losing the label on those forms.
  */
@@ -147,7 +147,7 @@ function getDescription(el: HTMLElement): string {
   return textFromIdList(el.ownerDocument, describedBy);
 }
 
-// ─── Context heading (P1-4) ──────────────────────────────────────────────────
+// ─── Context heading ─────────────────────────────────────────────────────────
 
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'legend', 'dt']);
 const LABELISH_TAGS = new Set(['div', 'span', 'p', 'label', 'strong', 'b']);
@@ -178,18 +178,17 @@ function isHeading(el: Element): boolean {
 }
 
 /**
- * P1-4: the old implementation walked every ancestor and accepted the text of
- * *any* previous div/span/p under 80 characters — on real ATS markup that is
- * usually the label of the neighbouring field or a breadcrumb, and it handed
- * a random rule +10 points. It was also O(ancestors × siblings) per field.
+ * The old implementation walked every ancestor and accepted the text of *any*
+ * previous div/span/p under 80 characters — on real ATS markup that is usually
+ * the neighbouring field's label or a breadcrumb, and it handed a random rule
+ * +10 points. It was also O(ancestors × siblings) per field.
  *
  * Now: real headings (h1-h6 / legend / dt / role=heading) win at any of the
- * first `MAX_ANCESTOR_DEPTH` levels; a label-like sibling is only accepted when
- * it is the *immediately* preceding sibling, close to the field, holds no form
- * control of its own and is not a <label for> pointing at another control.
- * Text identical to the label is dropped — it is already scored as the label
- * and must not be counted a second time.
- * Bounded to `MAX_ANCESTOR_DEPTH × MAX_SIBLING_SCAN` node visits per field.
+ * first `MAX_ANCESTOR_DEPTH` levels; a label-like sibling is accepted only when
+ * it *immediately* precedes the field, holds no form control of its own and is
+ * not a `<label for>` pointing elsewhere. Text identical to the label is dropped
+ * — it is already scored as the label. Bounded to
+ * `MAX_ANCESTOR_DEPTH × MAX_SIBLING_SCAN` node visits per field.
  */
 function getContextHeading(el: HTMLElement, labelText: string): string {
   const body = el.ownerDocument.body;
@@ -243,7 +242,7 @@ const SEARCH_NAME = /(?:^|[_\-\s[])(?:search|query|keyword|filter)|^q$/i;
 
 /**
  * A search box is never an application field, but "Location" filters on job
- * boards look exactly like a city field (P1-2). Detect and skip them.
+ * boards look exactly like a city field. Detect and skip them.
  */
 function isSearchContext(el: Element): boolean {
   const type = (el.getAttribute('type') ?? '').toLowerCase();
@@ -263,7 +262,7 @@ const MAX_STYLE_ANCESTORS = 6;
 /**
  * Cheap hidden-element test. Deliberately avoids `getBoundingClientRect` /
  * `offsetParent`: both force a layout pass, and doing that for 200 controls
- * would blow the 300 ms budget of NFR-3.
+ * would blow the 300 ms budget a fill has to stay inside.
  */
 function isHidden(el: FillableElement): boolean {
   if (el.hidden) return true;
@@ -383,10 +382,10 @@ export function buildClassificationBatch(
 }
 
 /**
- * Input types that can never receive profile data.
- * `password` (P0-4) is the important one: it used to be enumerated, scored and
- * decorated with the inline fill button on every login form on the internet.
- * `search` goes with it — a search box is not an application field.
+ * Input types that can never receive profile data. `password` is the important
+ * one: it used to be enumerated, scored and decorated with the inline fill
+ * button on every login form on the internet. `search` goes with it — a search
+ * box is not an application field.
  */
 const EXCLUDED_INPUT_TYPES = [
   'file',

@@ -10,8 +10,8 @@ import {
   type FillableElement,
 } from '../shared/field-matcher/fingerprint';
 import { MAX_CLASSIFY_FIELDS } from '../shared/messages';
-import { scoreField, MIN_MARGIN, MEDIUM_THRESHOLD } from '../shared/field-matcher/scorer';
-import { FIELD_RULES } from '../shared/field-matcher/dictionary';
+import { scoreField, MIN_MARGIN, MEDIUM_THRESHOLD, DEDICATED_BONUS } from '../shared/field-matcher/scorer';
+import { FIELD_RULES, type FieldType } from '../shared/field-matcher/dictionary';
 import * as fieldMatcher from '../shared/field-matcher';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
@@ -23,7 +23,6 @@ function loadFixture(name: string): Document {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Mount a markup fragment in the live document and return its first control */
 function mount(html: string): FillableElement {
   const host = document.createElement('div');
   host.innerHTML = html;
@@ -54,8 +53,6 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-// ─── Public API surface ───────────────────────────────────────────────────────
-
 describe('barrel exports', () => {
   it('exposes the engine through shared/field-matcher', () => {
     expect(Object.keys(fieldMatcher).sort()).toEqual([
@@ -79,8 +76,6 @@ describe('barrel exports', () => {
     expect(fieldMatcher.MIN_MARGIN).toBe(MIN_MARGIN);
   });
 });
-
-// ─── Scorer unit tests ────────────────────────────────────────────────────────
 
 describe('scoreField', () => {
   it('matches first name via autocomplete=given-name', () => {
@@ -187,8 +182,6 @@ describe('scoreField', () => {
   });
 });
 
-// ─── P1-1: `fullName` false positives ────────────────────────────────────────
-
 describe('fullName — regression: must not swallow every field containing "name"', () => {
   const traps: [string, string][] = [
     ['Company name', 'name="company_name"'],
@@ -260,8 +253,6 @@ describe('fullName — regression: must not swallow every field containing "name
   });
 });
 
-// ─── P1-2: `city` matching `location` ────────────────────────────────────────
-
 describe('city — regression: "Location" must not be treated as the home town', () => {
   it('a bare Location filter on a job board is not filled', () => {
     expect(fills('<input name="location" id="location" aria-label="Location" />')).toBeNull();
@@ -332,7 +323,171 @@ describe('city — regression: "Location" must not be treated as the home town',
   });
 });
 
-// ─── Remaining dictionary traps ──────────────────────────────────────────────
+describe('city — Czech vocabulary (P2-2)', () => {
+  it('"Preferovaná lokalita" is the applicant\'s own location', () => {
+    expect(fills('<label for="f">Preferovaná lokalita</label><input id="f" name="d4e7f0" />')).toBe('city');
+  });
+
+  const qualified = ['Současná lokalita', 'Preferované místo', 'Trvalé bydliště', 'Požadovaná lokalita'];
+  for (const label of qualified) {
+    it(`"${label}" carries a whose-location qualifier and fills`, () => {
+      expect(fills(`<label for="f">${label}</label><input id="f" name="q_1" />`)).toBe('city');
+    });
+  }
+
+  /**
+   * Bare "Lokalita" is the Czech counterpart of bare "Location" — what Jobs.cz
+   * and Prace.cz call their search filter. Recognised (so the field is outlined)
+   * but, exactly like "Location", never filled.
+   */
+  it('bare "Lokalita" is recognised but never filled — it is the Jobs.cz filter', () => {
+    const match = classify('<label for="f">Lokalita</label><input id="f" name="lokalita" />');
+    expect(match?.fieldType).toBe('city');
+    expect(match?.confidence).toBe('low');
+    expect(fills('<label for="f">Lokalita</label><input id="f" name="lokalita" />')).toBeNull();
+  });
+
+  /**
+   * The English mirror, "Work location", is pinned above as a false positive.
+   * The Czech one is identical: on a vacancy it is the employer's site, so it
+   * is outlined and left alone.
+   */
+  it('"Místo výkonu práce" is the employer\'s site, not the applicant\'s home town', () => {
+    const match = classify('<label for="f">Místo výkonu práce</label><input id="f" name="misto_vykonu_prace" />');
+    expect(match?.fieldType).toBe('city');
+    expect(match?.confidence).toBe('low');
+  });
+
+  it('"Pracoviště" is recognised but not filled — it is a company site, not a city', () => {
+    expect(fills(labelled('Pracoviště', 'name="pracoviste"'))).toBeNull();
+  });
+
+  it('"Pracovní místo" is the vacancy itself and is disqualified outright', () => {
+    expect(classify(labelled('Pracovní místo', 'name="pracovni_misto"'))).toBeNull();
+  });
+
+  it('"Místo" never fills however many sources repeat it (weak-only ceiling)', () => {
+    const match = classify(
+      '<label for="f">Místo</label><input id="f" name="misto" aria-label="Místo" placeholder="Místo" />',
+    );
+    expect(match?.fieldType).toBe('city');
+    expect(match!.score).toBeLessThan(MEDIUM_THRESHOLD);
+    expect(match?.confidence).toBe('low');
+  });
+
+  it('"Město" (a settlement) still outranks "místo" (a place)', () => {
+    expect(fills(labelled('Město', 'name="q_1"'))).toBe('city');
+    expect(fills(labelled('Místo', 'name="q_1"'))).toBeNull();
+  });
+
+  it('"Kraj" is not a city — the profile has no region to write there', () => {
+    expect(classify(labelled('Kraj', 'name="kraj"'))).toBeNull();
+  });
+});
+
+describe('dedicated labels (P2-1) — the label is often the only signal there is', () => {
+  /** Nothing but a <label>: no name, no id, no autocomplete, no aria */
+  function labelOnly(label: string, tag = 'input'): string {
+    return tag === 'input'
+      ? `<label for="f">${label}</label><input id="f" name="a3f9c1" />`
+      : `<label for="f">${label}</label><${tag} id="f" name="a3f9c1"></${tag}>`;
+  }
+
+  it('a label that names the field is exactly enough to fill it', () => {
+    const match = classify(labelOnly('Motivační dopis', 'textarea'));
+    expect(match?.fieldType).toBe('coverLetter');
+    expect(match!.score).toBe(MEDIUM_THRESHOLD);
+    expect(match?.confidence).toBe('medium');
+  });
+
+  it('DEDICATED_BONUS is calibrated so a dedicated label lands on the threshold', () => {
+    expect(DEDICATED_BONUS).toBe(15);
+  });
+
+  const dedicated: [string, string, string][] = [
+    ['Motivační dopis', 'textarea', 'coverLetter'],
+    ['Přiložte motivační dopis', 'textarea', 'coverLetter'],
+    ['Průvodní dopis', 'textarea', 'coverLetter'],
+    ['Preferovaná lokalita', 'input', 'city'],
+    ['Kdy můžete nastoupit?', 'input', 'availability'],
+    ['Jméno a příjmení', 'input', 'fullName'],
+    ['Telefon', 'input', 'phone'],
+    ['E-mail', 'input', 'email'],
+    ['Můžete přiložit LinkedIn profil', 'input', 'linkedin'],
+    ['Attach your cover letter', 'textarea', 'coverLetter'],
+    ['When can you start?', 'input', 'availability'],
+    ['Please enter your city', 'input', 'city'],
+  ];
+  for (const [label, tag, expected] of dedicated) {
+    it(`"${label}" fills from the label alone`, () => {
+      expect(fills(labelOnly(label, tag))).toBe(expected);
+    });
+  }
+
+  /**
+   * The cost of the bonus, and why it is not simply a bigger `STRONG.label`: a
+   * label that *mentions* a rule token inside a real question must stay unfilled
+   * and go to the model instead.
+   */
+  const mentionsOnly: [string, string][] = [
+    ['What is your availability to travel?', 'availability'],
+    ['Which city was our Prague office opened in?', 'city'],
+    ['Tell us about a project you are proud of', 'about'],
+    ['How did you hear about this job?', 'about'],
+    ['What would you put in a cover letter that a CV cannot say?', 'coverLetter'],
+  ];
+  for (const [label, notThis] of mentionsOnly) {
+    it(`"${label}" only mentions the token and is not filled as ${notThis}`, () => {
+      expect(fills(`<label for="f">${label}</label><textarea id="f" name="q_1"></textarea>`)).not.toBe(notThis);
+    });
+  }
+
+  it('an aria-label is worth exactly as much as a <label>', () => {
+    expect(fills('<input name="a3f9c1" aria-label="Preferovaná lokalita" />')).toBe('city');
+  });
+
+  it('a dedicated placeholder alone is still not enough', () => {
+    const match = classify('<input name="a3f9c1" placeholder="Město" />');
+    expect(match?.fieldType).toBe('city');
+    expect(match?.confidence).toBe('low');
+  });
+
+  it('a dedicated context heading alone is still not enough', () => {
+    const match = classify('<div class="row"><div class="label">Město</div><input name="a3f9c1" /></div>');
+    expect(match?.fieldType).toBe('city');
+    expect(match?.confidence).toBe('low');
+  });
+
+  it('a sentence too long to be a field name never counts as dedicated', () => {
+    // Every leftover word is filler, but 60+ characters is prose, not a name
+    const label = 'Please please please please please please please enter your city here';
+    expect(label.length).toBeGreaterThan(60);
+    expect(fills(`<label for="f">${label}</label><input id="f" name="a3f9c1" />`)).toBeNull();
+  });
+
+  it('a required marker and a character counter do not spoil dedication', () => {
+    expect(fills('<label for="f">Motivační dopis *</label><textarea id="f" name="a3f9c1"></textarea>')).toBe(
+      'coverLetter',
+    );
+    expect(fills('<label for="f">Cover letter (optional)</label><textarea id="f" name="a3f9c1"></textarea>')).toBe(
+      'coverLetter',
+    );
+  });
+
+  it('a negative context still beats a perfectly dedicated label', () => {
+    expect(fills('<label for="f">Company name</label><input id="f" name="a3f9c1" />')).toBeNull();
+    expect(fills('<label for="f">Job location</label><input id="f" name="a3f9c1" />')).toBeNull();
+  });
+
+  /**
+   * "Preferred name" is a nickname ("How should we call you?"), offered by ATS
+   * *next to* Legal Name. The profile holds a legal name, so the field belongs
+   * to the model path — the bonus must not promote it.
+   */
+  it('"Preferred name" is a nickname and stays unresolved for the model', () => {
+    expect(classify('<label for="f">Preferred name</label><input id="f" name="a3f9c1" />')).toBeNull();
+  });
+});
 
 describe('dictionary — other false positives found while auditing all 14 rules', () => {
   it('"About this job" is not the candidate\'s bio', () => {
@@ -450,8 +605,6 @@ describe('dictionary — other false positives found while auditing all 14 rules
   });
 });
 
-// ─── P1-3: near-tie protection ───────────────────────────────────────────────
-
 describe('scorer — margin over the runner-up (P1-3)', () => {
   it('exposes the margin so callers can reason about it', () => {
     expect(MIN_MARGIN).toBe(15);
@@ -491,8 +644,6 @@ describe('scorer — margin over the runner-up (P1-3)', () => {
     expect(match?.confidence).toBe('high');
   });
 });
-
-// ─── P1-6: open-ended questions ──────────────────────────────────────────────
 
 describe('open question detection (P1-6)', () => {
   it('finds a question kept in a sibling div instead of a label', () => {
@@ -557,7 +708,43 @@ describe('open question detection (P1-6)', () => {
   });
 });
 
-// ─── P1-5: aria-labelledby ───────────────────────────────────────────────────
+describe('dictionary vs. open question (P2-3)', () => {
+  /**
+   * "Kdy můžete nastoupit?" is the standard Czech phrasing of the start-date
+   * field. It used to reach the open-question path — the question mark won over
+   * the meaning — and the model answered it as an essay prompt instead of it
+   * being filled from `availability`. Two things had to be true for the rule to
+   * win: `nastoup-` in the dictionary, and a label worth enough on its own.
+   */
+  const startDateQuestions = [
+    'Kdy můžete nastoupit?',
+    'Kdy můžete nastoupit',
+    'Kdy jste schopen nastoupit?',
+    'When can you start?',
+    'What is your notice period?',
+  ];
+  for (const label of startDateQuestions) {
+    it(`"${label}" is a start date, not an essay prompt`, () => {
+      const match = classify(`<label for="f">${label}</label><input id="f" name="q_1" />`);
+      expect(match?.fieldType).toBe('availability');
+      expect(match?.confidence).toBe('medium');
+    });
+  }
+
+  it('a question the dictionary only half-recognises still goes to the model', () => {
+    // "travel" is a real subject word, so the label merely mentions availability
+    expect(
+      classify('<label for="f">What is your availability to travel?</label><textarea id="f" name="q_1"></textarea>')
+        ?.fieldType,
+    ).toBe('openQuestion');
+  });
+
+  it('an open question with no dictionary match at all is unaffected', () => {
+    expect(
+      classify('<label for="f">Proč chcete pracovat u nás?</label><textarea id="f" name="q_1"></textarea>')?.fieldType,
+    ).toBe('openQuestion');
+  });
+});
 
 describe('getLabelText / aria-labelledby (P1-5)', () => {
   it('collects text from a space separated ID list', () => {
@@ -622,8 +809,6 @@ describe('getLabelText / aria-labelledby (P1-5)', () => {
     expect(buildFingerprint(el).labelText).toBe('Phone');
   });
 });
-
-// ─── P1-4: context heading ───────────────────────────────────────────────────
 
 describe('getContextHeading (P1-4)', () => {
   it('picks up a real section heading', () => {
@@ -774,9 +959,8 @@ describe('normalize / serializeFingerprint', () => {
   /**
    * Known limitation, deliberately not "fixed" here: `pickSemanticName` returns
    * the first attribute that is not obviously generic, and a hash-like `id`
-   * qualifies — so it shadows the meaningful `data-automation-id` behind it.
-   * Reordering that list changes what every rule scores against, which is a
-   * scorer change, not a serialisation one.
+   * qualifies — shadowing the meaningful `data-automation-id` behind it.
+   * Reordering that list is a scorer change, not a serialisation one.
    */
   it('lets an opaque id shadow a meaningful data-automation-id', () => {
     const el = mount('<input id="a7f3c91e" data-automation-id="preferredName" />');
@@ -785,8 +969,6 @@ describe('normalize / serializeFingerprint', () => {
     expect(serialised).not.toContain('preferred name');
   });
 });
-
-// ─── buildClassificationBatch (FR-5.3 / S-3) ──────────────────────────────────
 
 describe('buildClassificationBatch', () => {
   /** Every fillable control on the page, fingerprinted — what the filler hands over. */
@@ -845,8 +1027,6 @@ describe('buildClassificationBatch', () => {
     expect(buildClassificationBatch([])).toEqual({ fields: [], payload: [] });
   });
 });
-
-// ─── enumerateFillable ────────────────────────────────────────────────────────
 
 describe('enumerateFillable', () => {
   it('excludes file inputs', () => {
@@ -1099,9 +1279,8 @@ describe('StartupJobs fixture (Czech)', () => {
   });
 });
 
-// ─── Realistic ATS fixtures (P1-11) ──────────────────────────────────────────
+// ─── Realistic ATS fixtures ──────────────────────────────────────────────────
 
-/** Map every enumerated control of a fixture to what the filler would write */
 function classifyFixture(name: string): Record<string, string | null> {
   const doc = loadFixture(name);
   const result: Record<string, string | null> = {};
@@ -1248,6 +1427,76 @@ describe('Lever (realistic markup)', () => {
   });
 });
 
+describe('Jobs.cz reply form — the form the extension actually failed on', () => {
+  let doc: Document;
+  let byId: Record<string, string | null>;
+  beforeEach(() => {
+    doc = loadFixture('jobs-cz-reply');
+    byId = classifyFixture('jobs-cz-reply');
+  });
+
+  /**
+   * The point of this fixture: not one control has a usable `name`, `id`,
+   * `autocomplete` or `data-*` hook. Everything below is decided by the label.
+   */
+  it('gives the matcher nothing but the label to work with', () => {
+    for (const el of enumerateFillable(doc)) {
+      const fp = buildFingerprint(el);
+      expect(fp.autocomplete).toBe('');
+      expect(fp.ariaLabel).toBe('');
+      expect(scoreField(fp), `#${fp.id} scored nothing`).not.toBeNull();
+      expect(fp.labelText.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('classifies every applicant field from its Czech label alone', () => {
+    expect(byId).toEqual({
+      'f-1': 'fullName',
+      'f-2': 'email',
+      'f-3': 'phone',
+      'f-4': 'city',
+      'f-5': 'availability',
+      'f-7': 'coverLetter',
+      'f-8': 'linkedin',
+    });
+  });
+
+  it('never enumerates the CV upload or either consent checkbox', () => {
+    expect(doc.getElementById('f-6')).toBeTruthy();
+    const enumerated = enumerateFillable(doc);
+    expect(enumerated.some((el) => (el as HTMLInputElement).type === 'file')).toBe(false);
+    expect(enumerated.some((el) => (el as HTMLInputElement).type === 'checkbox')).toBe(false);
+    expect(enumerated).toHaveLength(7);
+  });
+
+  it('reads the character counter as help text, not as a label', () => {
+    const el = doc.getElementById('f-7') as HTMLTextAreaElement;
+    const fp = buildFingerprint(el);
+    expect(fp.description).toBe('0/6000 znaků');
+    expect(fp.labelText).toBe('Přiložte motivační dopis');
+  });
+
+  it('"Kdy můžete nastoupit?" resolves to availability, not to an open question', () => {
+    const match = scoreField(buildFingerprint(doc.getElementById('f-5') as HTMLInputElement));
+    expect(match?.fieldType).toBe('availability');
+    expect(match?.confidence).toBe('medium');
+  });
+
+  it('the vacancy header\'s "Místo výkonu práce" is prose and owns no control', () => {
+    expect(doc.querySelector('.Job-meta')?.textContent).toContain('Místo výkonu práce');
+    for (const el of enumerateFillable(doc)) {
+      expect(buildFingerprint(el).contextHeading).not.toMatch(/výkonu/i);
+    }
+  });
+
+  it('each field carries a single unambiguous winner', () => {
+    for (const el of enumerateFillable(doc)) {
+      const match = scoreField(buildFingerprint(el));
+      expect(match!.confidence, `#${el.id} was downgraded`).not.toBe('low');
+    }
+  });
+});
+
 describe('Job search page — nothing may be filled', () => {
   let doc: Document;
   beforeEach(() => { doc = loadFixture('job-search'); });
@@ -1280,7 +1529,425 @@ describe('Job search page — nothing may be filled', () => {
   });
 });
 
-// ─── NFR-3: throughput ───────────────────────────────────────────────────────
+// ─── Vocabulary coverage table ───────────────────────────────────────────────
+
+/**
+ * Breadth is this dictionary's primary function: both field-level bugs seen on
+ * live forms were a *missing synonym* (`lokalita`, `nastoupit`), never a scoring
+ * mistake. Every row is a phrasing that occurs on a real Czech, Slovak or
+ * English application form, pinned to what the filler would actually do.
+ *
+ * Rows are checked on a LABEL-ONLY control (`name="a3f9c1"`, no id, no
+ * autocomplete, no aria, no data-*) — the hardest realistic shape, and the one
+ * the extension actually failed on, since Jobs.cz and Prace.cz generate hashed
+ * names and positional ids. A phrasing that fills here fills everywhere with
+ * more signal, so the table doubles as a regression test for `DEDICATED_BONUS`:
+ * any change that leaves an adjective stranded ("Mobilní **telefon**",
+ * "Earliest start **date**") drops the row from 35 to 20 and fails here.
+ */
+function labelOnly(label: string, tag = 'input'): string {
+  return tag === 'input'
+    ? `<label for="f">${label}</label><input id="f" name="a3f9c1" />`
+    : `<label for="f">${label}</label><${tag} id="f" name="a3f9c1"></${tag}>`;
+}
+
+/** Every phrasing that must resolve to its field type and be written */
+const COVERAGE: [FieldType, string, string][] = [
+  // ── firstName: EN, ATS, Czech declension, Slovak, imperatives ──
+  ['firstName', 'First name', 'input'],
+  ['firstName', 'First Name *', 'input'],
+  ['firstName', 'Given name', 'input'],
+  ['firstName', 'Forename', 'input'],
+  ['firstName', 'Christian name', 'input'],
+  ['firstName', 'Jméno', 'input'],
+  ['firstName', 'Jmeno', 'input'],
+  ['firstName', 'Křestní jméno', 'input'],
+  ['firstName', 'Vaše jméno', 'input'],
+  ['firstName', 'Jménem', 'input'],
+  ['firstName', 'Zadejte prosím Vaše jméno', 'input'],
+  ['firstName', 'Uveďte své jméno', 'input'],
+  ['firstName', 'Meno', 'input'],
+  ['firstName', 'Krstné meno', 'input'],
+
+  // ── lastName ──
+  ['lastName', 'Last name', 'input'],
+  ['lastName', 'Surname', 'input'],
+  ['lastName', 'Family name', 'input'],
+  ['lastName', 'Second name', 'input'],
+  ['lastName', 'Příjmení', 'input'],
+  ['lastName', 'Prijmeni', 'input'],
+  ['lastName', 'Vaše příjmení', 'input'],
+  ['lastName', 'Vyplňte příjmení', 'input'],
+  ['lastName', 'Priezvisko', 'input'],
+
+  // ── fullName, incl. the compound spellings ──
+  ['fullName', 'Full name', 'input'],
+  ['fullName', 'Name', 'input'],
+  ['fullName', 'Your name', 'input'],
+  ['fullName', 'Legal name', 'input'],
+  ['fullName', 'Candidate name', 'input'],
+  ['fullName', 'Name and surname', 'input'],
+  ['fullName', 'First and last name', 'input'],
+  ['fullName', 'First & last name', 'input'],
+  ['fullName', 'Jméno a příjmení', 'input'],
+  ['fullName', 'Příjmení a jméno', 'input'],
+  ['fullName', 'Celé jméno', 'input'],
+  ['fullName', 'Meno a priezvisko', 'input'],
+
+  // ── email, incl. abbreviations and the colloquial "mejl" ──
+  ['email', 'E-mail', 'input'],
+  ['email', 'Email address', 'input'],
+  ['email', 'E-mailová adresa', 'input'],
+  ['email', 'Váš e-mail', 'input'],
+  ['email', 'Emailu', 'input'],
+  ['email', 'Mail', 'input'],
+  ['email', 'Mejl', 'input'],
+  ['email', 'Elektronická pošta', 'input'],
+  ['email', 'Zadejte e-mail', 'input'],
+
+  // ── phone, incl. tel. / mob. / GSM and the Czech adjective+noun pairs ──
+  ['phone', 'Phone', 'input'],
+  ['phone', 'Phone number', 'input'],
+  ['phone', 'Telephone', 'input'],
+  ['phone', 'Mobile', 'input'],
+  ['phone', 'Contact number', 'input'],
+  ['phone', 'Tel.', 'input'],
+  ['phone', 'Mob.', 'input'],
+  ['phone', 'GSM', 'input'],
+  ['phone', 'WhatsApp', 'input'],
+  ['phone', 'Telefon', 'input'],
+  ['phone', 'Mobilní telefon', 'input'],
+  ['phone', 'Kontaktní telefon', 'input'],
+  ['phone', 'Číslo telefonu', 'input'],
+  ['phone', 'Pevná linka', 'input'],
+  ['phone', 'Telefónne číslo', 'input'],
+
+  // ── linkedin / github ──
+  ['linkedin', 'LinkedIn', 'input'],
+  ['linkedin', 'LinkedIn profil', 'input'],
+  ['linkedin', 'Linked In URL', 'input'],
+  ['github', 'GitHub', 'input'],
+  ['github', 'Github profil', 'input'],
+
+  // ── website: the gap that made `Vaše webová stránka` invisible ──
+  ['website', 'Website', 'input'],
+  ['website', 'Personal website', 'input'],
+  ['website', 'Homepage', 'input'],
+  ['website', 'Portfolio', 'input'],
+  ['website', 'Blog', 'input'],
+  ['website', 'Web', 'input'],
+  ['website', 'Vaše webová stránka', 'input'],
+  ['website', 'Webová stránka', 'input'],
+  ['website', 'Webovka', 'input'],
+  ['website', 'Osobní web', 'input'],
+  ['website', 'Osobní stránky', 'input'],
+  ['website', 'Vlastní web', 'input'],
+  ['website', 'Internetová stránka', 'input'],
+
+  // ── salary ──
+  ['salary', 'Salary', 'input'],
+  ['salary', 'Salary expectations', 'input'],
+  ['salary', 'Expected salary', 'input'],
+  ['salary', 'Desired compensation', 'input'],
+  ['salary', 'Hourly rate', 'input'],
+  ['salary', 'Mzda', 'input'],
+  ['salary', 'Plat', 'input'],
+  ['salary', 'Platové očekávání', 'input'],
+  ['salary', 'Mzdové očekávání', 'input'],
+  ['salary', 'Požadovaná mzda', 'input'],
+  ['salary', 'Finanční očekávání', 'input'],
+  ['salary', 'Odměna', 'input'],
+  ['salary', 'Představa o platu', 'input'],
+  ['salary', 'Hodinová sazba', 'input'],
+
+  // ── city ──
+  ['city', 'City', 'input'],
+  ['city', 'Town', 'input'],
+  ['city', 'City/Town', 'input'],
+  ['city', 'Hometown', 'input'],
+  ['city', 'Current location', 'input'],
+  ['city', 'Your city', 'input'],
+  ['city', 'Where do you live?', 'input'],
+  ['city', 'Město', 'input'],
+  ['city', 'Obec', 'input'],
+  ['city', 'Bydliště', 'input'],
+  ['city', 'Bydlisko', 'input'],
+  ['city', 'Trvalé bydliště', 'input'],
+  ['city', 'Místo bydliště', 'input'],
+  ['city', 'Preferovaná lokalita', 'input'],
+  ['city', 'Vaše lokalita', 'input'],
+  ['city', 'Aktuální lokalita', 'input'],
+  ['city', 'Kde bydlíte?', 'input'],
+
+  // ── coverLetter ──
+  ['coverLetter', 'Cover letter', 'textarea'],
+  ['coverLetter', 'Covering letter', 'textarea'],
+  ['coverLetter', 'Cover note', 'textarea'],
+  ['coverLetter', 'Motivation letter', 'textarea'],
+  ['coverLetter', 'Letter of interest', 'textarea'],
+  ['coverLetter', 'Message to Hiring Manager', 'textarea'],
+  ['coverLetter', 'Motivační dopis', 'textarea'],
+  ['coverLetter', 'Průvodní dopis', 'textarea'],
+  ['coverLetter', 'Přiložte motivační dopis', 'textarea'],
+  ['coverLetter', 'Motivačný list', 'textarea'],
+  ['coverLetter', 'Sprievodný list', 'textarea'],
+
+  // ── availability ──
+  ['availability', 'Availability', 'input'],
+  ['availability', 'Available from', 'input'],
+  ['availability', 'Start date', 'input'],
+  ['availability', 'Earliest start date', 'input'],
+  ['availability', 'Notice period', 'input'],
+  ['availability', 'When can you start?', 'input'],
+  ['availability', 'How soon can you start?', 'input'],
+  ['availability', 'Kdy můžete nastoupit?', 'input'],
+  ['availability', 'Nástup', 'input'],
+  ['availability', 'Datum nástupu', 'input'],
+  ['availability', 'Možný termín nástupu', 'input'],
+  ['availability', 'Výpovědní lhůta', 'input'],
+  ['availability', 'Dostupnost', 'input'],
+  ['availability', 'K dispozici od', 'input'],
+
+  // ── workPermit ──
+  ['workPermit', 'Work permit', 'input'],
+  ['workPermit', 'Visa status', 'input'],
+  ['workPermit', 'Citizenship', 'input'],
+  ['workPermit', 'Nationality', 'input'],
+  ['workPermit', 'Right to work', 'input'],
+  ['workPermit', 'Do you require sponsorship?', 'input'],
+  ['workPermit', 'Are you legally authorized to work?', 'input'],
+  ['workPermit', 'Pracovní povolení', 'input'],
+  ['workPermit', 'Povolení k pobytu', 'input'],
+  ['workPermit', 'Občanství', 'input'],
+  ['workPermit', 'Státní příslušnost', 'input'],
+  ['workPermit', 'Modrá karta', 'input'],
+  ['workPermit', 'Zaměstnanecká karta', 'input'],
+  ['workPermit', 'Víza', 'input'],
+
+  // ── about ──
+  ['about', 'About you', 'textarea'],
+  ['about', 'About me', 'textarea'],
+  ['about', 'Professional summary', 'textarea'],
+  ['about', 'Personal statement', 'textarea'],
+  ['about', 'Bio', 'textarea'],
+  ['about', 'Introduction', 'textarea'],
+  ['about', 'O sobě', 'textarea'],
+  ['about', 'Něco o sobě', 'textarea'],
+  ['about', 'Souhrn', 'textarea'],
+  ['about', 'Shrnutí', 'textarea'],
+  ['about', 'Krátké představení', 'textarea'],
+  ['about', 'Profil', 'textarea'],
+];
+
+describe('vocabulary coverage — a label alone must be enough', () => {
+  for (const [expected, label, tag] of COVERAGE) {
+    it(`"${label}" → ${expected}`, () => {
+      expect(fills(labelOnly(label, tag))).toBe(expected);
+    });
+  }
+
+  it('covers at least 120 distinct phrasings across all 14 rules', () => {
+    expect(new Set(COVERAGE.map(([, label]) => label)).size).toBeGreaterThanOrEqual(120);
+    expect(new Set(COVERAGE.map(([type]) => type)).size).toBe(FIELD_RULES.length);
+  });
+});
+
+/**
+ * Attribute spellings. `extractSemanticName` does most of the work, but the raw
+ * attribute is matched too and is worth 30 — the difference between `medium`
+ * and `low` on a control that has nothing else.
+ */
+const ATTRIBUTE_COVERAGE: [FieldType, string][] = [
+  ['firstName', 'first_name'],
+  ['firstName', 'firstName'],
+  ['firstName', 'fname'],
+  ['firstName', 'given_name'],
+  ['firstName', 'name_first'],
+  ['firstName', 'candidate[first_name]'],
+  ['firstName', 'applicant.firstName'],
+  ['firstName', 'user[profile][first_name]'],
+  ['lastName', 'last_name'],
+  ['lastName', 'lastName'],
+  ['lastName', 'lname'],
+  ['lastName', 'surname'],
+  ['lastName', 'name_last'],
+  ['lastName', 'candidate[last_name]'],
+  ['fullName', 'name'],
+  ['fullName', 'full_name'],
+  ['fullName', 'legal_name'],
+  ['fullName', 'candidate[name]'],
+  ['email', 'email'],
+  ['email', 'emailAddress'],
+  ['email', 'e_mail'],
+  ['email', 'applicant.emailAddress'],
+  ['phone', 'phone'],
+  ['phone', 'phoneNumber'],
+  ['phone', 'tel_number'],
+  ['phone', 'mobile_phone'],
+  ['linkedin', 'linkedinUrl'],
+  ['linkedin', 'urls[LinkedIn]'],
+  ['github', 'urls[GitHub]'],
+  ['website', 'urls[Portfolio]'],
+  ['website', 'personal_website'],
+  ['salary', 'salary_expectation'],
+  ['salary', 'mzda'],
+  ['city', 'candidate_city'],
+  ['city', 'bydliste'],
+  ['coverLetter', 'coverLetter'],
+  ['coverLetter', 'motivacni_dopis'],
+  ['availability', 'termin_nastupu'],
+  ['workPermit', 'obcanstvi'],
+  ['about', 'o_sobe'],
+];
+
+describe('vocabulary coverage — attribute spellings', () => {
+  for (const [expected, attr] of ATTRIBUTE_COVERAGE) {
+    it(`name="${attr}" → ${expected}`, () => {
+      expect(fills(`<input name="${attr}" />`)).toBe(expected);
+    });
+  }
+});
+
+/**
+ * The half that matters more: a widened positive list must not start writing the
+ * candidate's data into a field belonging to the employer, to a filter or to a
+ * third party. Every row is recognised but never filled, or dropped outright.
+ */
+const NEVER_FILLED: [string, string, string][] = [
+  // employer-owned fields — the Czech genitive word order is the new half
+  ['fullName', 'Company name', 'input'],
+  ['firstName', 'Jméno společnosti', 'input'],
+  ['firstName', 'Jméno zaměstnavatele', 'input'],
+  ['fullName', 'Název firmy', 'input'],
+  ['website', 'Company website', 'input'],
+  ['website', 'Firemní web', 'input'],
+  ['website', 'Web společnosti', 'input'],
+  ['linkedin', 'Company LinkedIn', 'input'],
+  ['city', 'Lokalita pobočky', 'input'],
+  // logins and other non-person names
+  ['fullName', 'Username', 'input'],
+  ['firstName', 'Uživatelské jméno', 'input'],
+  ['fullName', 'Display name', 'input'],
+  ['fullName', 'Preferred name', 'input'],
+  ['lastName', 'Rodné příjmení', 'input'],
+  // third parties
+  ['fullName', 'Referral name', 'input'],
+  ['firstName', 'Emergency contact first name', 'input'],
+  ['lastName', 'Reference last name', 'input'],
+  ['email', 'Referral email', 'input'],
+  ['phone', 'Emergency contact phone', 'input'],
+  ['phone', 'Telefon kontaktní osoby', 'input'],
+  // search filters and vacancy metadata
+  ['city', 'Location', 'input'],
+  ['city', 'Lokalita', 'input'],
+  ['city', 'Job location', 'input'],
+  ['city', 'Office location', 'input'],
+  ['city', 'Místo výkonu práce', 'input'],
+  ['city', 'Pracoviště', 'input'],
+  ['availability', 'Available positions', 'input'],
+  ['availability', 'Volné místo', 'input'],
+  // fields that mean something else entirely
+  ['city', 'Místo narození', 'input'],
+  ['city', 'Place of birth', 'input'],
+  ['city', 'Billing city', 'input'],
+  ['city', 'Kraj', 'input'],
+  ['availability', 'Project start date', 'input'],
+  ['availability', 'Education end date', 'input'],
+  ['availability', 'Datum narození', 'input'],
+  ['availability', 'Interview date', 'input'],
+  ['email', 'Newsletter email', 'input'],
+  ['email', 'Odběr novinek', 'input'],
+  ['email', 'Mailing list', 'input'],
+  ['about', 'About the company', 'textarea'],
+  ['about', 'O nás', 'textarea'],
+  ['about', 'Order summary', 'input'],
+  ['workPermit', 'Credit card type (Visa/Mastercard)', 'input'],
+  // words that merely contain a rule token
+  ['phone', 'Hotel', 'input'],
+  ['phone', 'Telegram', 'input'],
+  ['phone', 'Intel experience', 'input'],
+  ['salary', 'Platforma', 'input'],
+];
+
+describe('vocabulary coverage — nothing on the other side of the form is filled', () => {
+  for (const [notThis, label, tag] of NEVER_FILLED) {
+    it(`"${label}" is never filled as ${notThis}`, () => {
+      expect(fills(labelOnly(label, tag))).not.toBe(notThis);
+    });
+  }
+
+  it('pins at least 40 negative phrasings', () => {
+    expect(NEVER_FILLED.length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+/**
+ * Recognised, outlined, never written. The `weak` tier exists for words that are
+ * genuinely ambiguous alone: bare `Lokalita` is the Jobs.cz filter, bare
+ * `Stránky` means "pages", bare `Motivace` introduces an essay as often as a box.
+ */
+const WEAK_BY_DESIGN: [FieldType, string, string][] = [
+  ['city', 'Lokalita', 'input'],
+  ['city', 'Location', 'input'],
+  ['city', 'Místo', 'input'],
+  ['city', 'Pracoviště', 'input'],
+  ['website', 'Stránky', 'input'],
+  ['coverLetter', 'Motivace', 'textarea'],
+];
+
+describe('vocabulary coverage — the deliberately weak tier', () => {
+  for (const [type, label, tag] of WEAK_BY_DESIGN) {
+    it(`"${label}" is recognised as ${type} but stays below the fill threshold`, () => {
+      const match = classify(labelOnly(label, tag));
+      expect(match?.fieldType).toBe(type);
+      expect(match!.score).toBeLessThan(MEDIUM_THRESHOLD);
+      expect(match?.confidence).toBe('low');
+    });
+  }
+});
+
+describe('the two phrasings this expansion was commissioned for', () => {
+  it('"Jméno společnosti" no longer scores as the candidate\'s first name', () => {
+    expect(classify(labelOnly('Jméno společnosti'))).toBeNull();
+  });
+
+  it('"Vaše webová stránka" is recognised at all — it used to match nothing', () => {
+    const match = classify(labelOnly('Vaše webová stránka'));
+    expect(match?.fieldType).toBe('website');
+    expect(match?.confidence).toBe('medium');
+  });
+
+  it('the Czech genitive owner is what does it, in either word order', () => {
+    expect(fills(labelOnly('Jméno firmy'))).toBeNull();
+    expect(fills(labelOnly('Company first name'))).toBeNull();
+  });
+});
+
+/**
+ * The soft boundary has to know about Czech letters. `í` is not an ASCII
+ * letter, so `(?<![a-z])jmen` matched *inside* `příjmení` the moment the
+ * `jméno` stem was widened to cover its declension — and every surname field on
+ * a Czech form scored as a given name.
+ */
+describe('diacritics-aware word boundaries', () => {
+  const pairs: [string, FieldType][] = [
+    ['Příjmení', 'lastName'],
+    ['Vaše příjmení', 'lastName'],
+    ['Jméno', 'firstName'],
+    ['Křestní jméno', 'firstName'],
+  ];
+  for (const [label, expected] of pairs) {
+    it(`"${label}" resolves to ${expected}, not to the stem buried inside it`, () => {
+      expect(fills(labelOnly(label))).toBe(expected);
+    });
+  }
+
+  it('no rule matches a token that only appears after an accented letter', () => {
+    const firstName = FIELD_RULES.find((r) => r.type === 'firstName')!;
+    expect(firstName.pattern.test('příjmení')).toBe(false);
+    expect(firstName.pattern.test('náměstí')).toBe(false);
+  });
+});
 
 describe('performance (NFR-3)', () => {
   it('enumerates, fingerprints and scores 200 controls well inside 300 ms', () => {
@@ -1303,3 +1970,5 @@ describe('performance (NFR-3)', () => {
     expect(elapsed).toBeLessThan(300);
   });
 });
+
+

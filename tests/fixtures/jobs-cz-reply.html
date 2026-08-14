@@ -1,0 +1,92 @@
+<!--
+  Jobs.cz "Odpovědět na inzerát" reply form — the first fixture taken from a
+  page the extension actually failed on (vinci-construction.jobs.cz).
+
+  What makes it hard, and what every other fixture in this directory was
+  missing: **the <label> is the only readable signal a control has.** `name`
+  attributes are generated hashes, ids are positional, there is no
+  `autocomplete`, no `data-*` test hook and no `aria-label`. Every field here
+  therefore scored label(20) alone under the old ladder, stayed `low` and was
+  never filled — on the extension's primary market.
+
+  Reproduced from the shipped markup:
+   * hashed `name` attributes (`a3f9c1`) and positional ids (`f-1`);
+   * the CV upload is `type="file"` and must never be enumerated;
+   * the motivation textarea has a `maxlength` and a live "0/6000 znaků"
+     counter wired through `aria-describedby` — help text, not a label;
+   * two separate "Souhlasím…" consent checkboxes (FR-2.6);
+   * the vacancy header carries "Místo výkonu práce" as *prose*: it describes
+     the job, it is not a control, and nothing may be written near it.
+-->
+<html lang="cs">
+<head><title>Stavbyvedoucí – VINCI Construction CS a.s. | Jobs.cz</title></head>
+<body>
+  <h1>Stavbyvedoucí</h1>
+
+  <div class="Job-meta">
+    <span class="Job-meta-label">Místo výkonu práce</span>
+    <span class="Job-meta-value">Praha 4</span>
+  </div>
+
+  <form class="Reply-form" action="/odpovedet" method="post">
+    <h2>Odpověď na inzerát</h2>
+
+    <div class="Form-row">
+      <label for="f-1">Jméno a příjmení</label>
+      <input id="f-1" name="a3f9c1" type="text" />
+    </div>
+
+    <div class="Form-row">
+      <label for="f-2">E-mail</label>
+      <input id="f-2" name="b7d2e4" type="email" />
+    </div>
+
+    <div class="Form-row">
+      <label for="f-3">Telefon</label>
+      <input id="f-3" name="c1a8b3" type="tel" />
+    </div>
+
+    <div class="Form-row">
+      <label for="f-4">Preferovaná lokalita</label>
+      <input id="f-4" name="d4e7f0" type="text" />
+    </div>
+
+    <div class="Form-row">
+      <label for="f-5">Kdy můžete nastoupit?</label>
+      <input id="f-5" name="e8b2c5" type="text" />
+    </div>
+
+    <div class="Form-row">
+      <label for="f-6">Přiložte strukturované CV</label>
+      <input id="f-6" name="f2c9d1" type="file" accept=".pdf,.doc,.docx" />
+    </div>
+
+    <div class="Form-row">
+      <label for="f-7">Přiložte motivační dopis</label>
+      <textarea id="f-7" name="a9e3b7" rows="8" maxlength="6000" aria-describedby="f-7-counter"></textarea>
+      <span class="Form-counter" id="f-7-counter">0/6000 znaků</span>
+    </div>
+
+    <div class="Form-row">
+      <label for="f-8">Můžete přiložit LinkedIn profil</label>
+      <input id="f-8" name="b5d8a2" type="url" />
+    </div>
+
+    <div class="Form-row Form-row--consent">
+      <label for="f-9">
+        <input id="f-9" name="c7f1e9" type="checkbox" />
+        Souhlasím se zpracováním osobních údajů
+      </label>
+    </div>
+
+    <div class="Form-row Form-row--consent">
+      <label for="f-10">
+        <input id="f-10" name="d3a6b8" type="checkbox" />
+        Souhlasím se zařazením do databáze uchazečů
+      </label>
+    </div>
+
+    <button type="submit">Odeslat odpověď</button>
+  </form>
+</body>
+</html>
