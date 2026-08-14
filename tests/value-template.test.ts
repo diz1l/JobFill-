@@ -1,0 +1,769 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { deriveAtoms, DERIVED_VALUE_KEYS } from '../shared/filler/atoms';
+import {
+  ANY_SHAPE,
+  describeField,
+  isNumericControl,
+  normalizeText,
+  patternAllowsPlus,
+  patternDigitLimit,
+  says,
+  type FieldShape,
+} from '../shared/filler/fieldShape';
+import { nameOrder, VARIANTS } from '../shared/filler/templateVariants';
+import {
+  DEFAULT_TEMPLATES,
+  PROFILE_VALUE_KEYS,
+  TEMPLATE_VALUE_KEYS,
+  isProfileValueKey,
+  isTemplateValueKey,
+  resolveAnswer,
+  resolveFieldType,
+  resolveTemplate,
+  selectTemplate,
+  type ValueContext,
+} from '../shared/filler/valueTemplate';
+import { fillPage } from '../shared/filler/index';
+import { removeAllHighlights } from '../shared/filler/highlight';
+import { forgetCoverTargets } from '../shared/filler/coverTarget';
+import { buildFingerprint } from '../shared/field-matcher/fingerprint';
+import { createEmptyProfile, type Profile } from '../shared/types';
+
+/**
+ * The profile the whole file composes from: two name atoms, a phone in E.164, a
+ * LinkedIn URL, a salary with a currency in it — every case below is the same
+ * eight facts, re-spelled for the form that is asking.
+ */
+const PROFILE: Profile = createEmptyProfile({
+  firstName: 'Dias',
+  lastName: 'Nurgaliyev',
+  email: 'dias@example.com',
+  phone: '+420123456789',
+  city: 'Praha, Czechia',
+  linkedin: 'https://www.linkedin.com/in/dias-nur',
+  github: 'github.com/diz1l',
+  website: 'dias.dev',
+  salaryExpectation: '80 000 Kč',
+  availability: '1 September',
+  workPermit: 'EU citizen',
+  about: 'I build things that work.',
+});
+
+function ctxOf(overrides: Partial<Profile> = {}, coverLetter?: string): ValueContext {
+  return { profile: { ...PROFILE, ...overrides }, coverLetter };
+}
+
+function shape(overrides: Partial<FieldShape> = {}): FieldShape {
+  return { ...ANY_SHAPE, ...overrides };
+}
+
+/** Render one control and describe it exactly the way `fillPage` does. */
+function shapeOf(html: string): FieldShape {
+  document.body.innerHTML = `<form>${html}</form>`;
+  const el = document.querySelector('input,textarea,select') as HTMLInputElement;
+  return describeField(buildFingerprint(el));
+}
+
+afterEach(() => {
+  document.body.innerHTML = '';
+});
+
+describe('derived atoms', () => {
+  const derived = (overrides: Partial<Profile> = {}) => {
+    const p = { ...PROFILE, ...overrides };
+    return deriveAtoms({
+      firstName: p.firstName,
+      lastName: p.lastName,
+      phone: p.phone,
+      city: p.city,
+      linkedin: p.linkedin,
+      github: p.github,
+      website: p.website,
+      salary: p.salaryExpectation,
+    });
+  };
+
+  it('passes the two name atoms through when both are filled', () => {
+    expect(derived()).toMatchObject({
+      givenName: 'Dias',
+      familyName: 'Nurgaliyev',
+      firstInitial: 'D',
+      lastInitial: 'N',
+    });
+  });
+
+  /**
+   * The inverse of the composition case: the whole name typed into one settings
+   * box, and a form that asks for the halves separately.
+   */
+  it('splits a whole name out of whichever single box holds it', () => {
+    expect(derived({ firstName: 'Dias Nurgaliyev', lastName: '' })).toMatchObject({
+      givenName: 'Dias',
+      familyName: 'Nurgaliyev',
+    });
+    expect(derived({ firstName: '', lastName: 'Dias Nurgaliyev' })).toMatchObject({
+      givenName: 'Dias',
+      familyName: 'Nurgaliyev',
+    });
+  });
+
+  it('keeps a multi-word given name together', () => {
+    expect(derived({ firstName: 'Jean Paul Charles', lastName: '' })).toMatchObject({
+      givenName: 'Jean Paul',
+      familyName: 'Charles',
+    });
+  });
+
+  it('never invents the half that is not there', () => {
+    expect(derived({ firstName: 'Dias', lastName: '' })).toMatchObject({
+      givenName: 'Dias',
+      familyName: '',
+      lastInitial: '',
+    });
+    expect(derived({ firstName: '', lastName: '' })).toMatchObject({
+      givenName: '',
+      familyName: '',
+      firstInitial: '',
+    });
+  });
+
+  it('splits an E.164 phone into country code and subscriber number', () => {
+    expect(derived()).toMatchObject({
+      phoneCountryCode: '+420',
+      phoneNational: '123456789',
+      phoneDigits: '420123456789',
+      phoneSpaced: '+420 123 456 789',
+    });
+  });
+
+  it('reads a two-digit and a one-digit country code', () => {
+    expect(derived({ phone: '+442079460958' })).toMatchObject({
+      phoneCountryCode: '+44',
+      phoneNational: '2079460958',
+    });
+    expect(derived({ phone: '+14155550123' })).toMatchObject({
+      phoneCountryCode: '+1',
+      phoneNational: '4155550123',
+      // 10 digits group neither by three nor by four — left alone rather than
+      // grouped raggedly.
+      phoneSpaced: '+1 4155550123',
+    });
+  });
+
+  it('understands the 00 prefix as well as +', () => {
+    expect(derived({ phone: '00420123456789' })).toMatchObject({
+      phoneCountryCode: '+420',
+      phoneNational: '123456789',
+    });
+  });
+
+  it('leaves a national number alone — there is no country code to remove', () => {
+    expect(derived({ phone: '123456789' })).toMatchObject({
+      phoneCountryCode: '',
+      phoneNational: '123456789',
+      phoneDigits: '123456789',
+    });
+  });
+
+  it('groups an eight-digit number in fours', () => {
+    expect(derived({ phone: '12345678' })).toMatchObject({ phoneSpaced: '1234 5678' });
+  });
+
+  it('does not guess an unlisted country code', () => {
+    expect(derived({ phone: '+999123456789' })).toMatchObject({
+      phoneCountryCode: '',
+      phoneDigits: '999123456789',
+    });
+  });
+
+  it('a phone that is not there derives nothing', () => {
+    expect(derived({ phone: '' })).toMatchObject({
+      phoneCountryCode: '',
+      phoneNational: '',
+      phoneDigits: '',
+      phoneSpaced: '',
+    });
+  });
+
+  it('reads the handle out of a profile URL, and leaves a bare handle alone', () => {
+    expect(derived().linkedinUser).toBe('dias-nur');
+    expect(derived({ linkedin: 'https://linkedin.com/in/dias-nur/?trk=x' }).linkedinUser).toBe(
+      'dias-nur',
+    );
+    expect(derived({ linkedin: '@dias-nur' }).linkedinUser).toBe('dias-nur');
+    expect(derived({ github: 'diz1l' }).githubUser).toBe('diz1l');
+  });
+
+  it('expands a bare handle into the URL its own field implies', () => {
+    expect(derived({ linkedin: 'dias-nur' }).linkedinUrl).toBe(
+      'https://www.linkedin.com/in/dias-nur',
+    );
+    expect(derived({ github: '@diz1l' }).githubUrl).toBe('https://github.com/diz1l');
+  });
+
+  it('adds the scheme a hostname is missing', () => {
+    expect(derived().githubUrl).toBe('https://github.com/diz1l');
+    expect(derived().websiteUrl).toBe('https://dias.dev');
+    expect(derived({ website: 'https://dias.dev' }).websiteUrl).toBe('https://dias.dev');
+  });
+
+  it('refuses to build a URL out of something that is not one', () => {
+    expect(derived({ website: 'my portfolio' }).websiteUrl).toBe('');
+    expect(derived({ website: '' }).websiteUrl).toBe('');
+  });
+
+  it('strips scheme, www and path down to the host', () => {
+    expect(derived({ website: 'https://www.dias.dev/cv?lang=cs' }).websiteHost).toBe('dias.dev');
+    expect(derived().websiteHost).toBe('dias.dev');
+  });
+
+  it('takes the city out of a stored "city, country"', () => {
+    expect(derived().cityName).toBe('Praha');
+    expect(derived({ city: 'Praha' }).cityName).toBe('Praha');
+    expect(derived({ city: '' }).cityName).toBe('');
+  });
+
+  it('takes the number out of a written amount', () => {
+    expect(derived().salaryNumber).toBe('80000');
+    expect(derived({ salaryExpectation: '80000 CZK' }).salaryNumber).toBe('80000');
+    expect(derived({ salaryExpectation: '3,500 EUR / month' }).salaryNumber).toBe('3500');
+    expect(derived({ salaryExpectation: '1500.50' }).salaryNumber).toBe('1500.50');
+    expect(derived({ salaryExpectation: '1.234.567 Kč' }).salaryNumber).toBe('1234567');
+    expect(derived({ salaryExpectation: '5' }).salaryNumber).toBe('5');
+    expect(derived({ salaryExpectation: 'negotiable' }).salaryNumber).toBe('');
+  });
+});
+
+describe('describeField', () => {
+  it('normalizes case and diacritics and keeps the sources apart', () => {
+    expect(normalizeText('  Příjmení   a Jméno ')).toBe('prijmeni a jmeno');
+    const s = shapeOf('<label for="n">Příjmení a jméno</label><input id="n" name="cele_jmeno" />');
+    expect(s.text).toContain('prijmeni a jmeno');
+    expect(s.text).toContain('|');
+  });
+
+  it('reads the constraints the page states', () => {
+    const s = shapeOf(
+      '<input id="p" name="phone" type="tel" maxlength="9" pattern="[0-9]{9}" inputmode="TEL" placeholder="123 456 789" />',
+    );
+    expect(s).toMatchObject({
+      maxLength: 9,
+      pattern: '[0-9]{9}',
+      inputMode: 'tel',
+      controlType: 'tel',
+      placeholder: '123 456 789',
+      multiline: false,
+    });
+  });
+
+  it('treats an absent, unparsable or negative maxlength as no constraint', () => {
+    expect(shapeOf('<input id="a" />').maxLength).toBe(0);
+    expect(shapeOf('<input id="a" maxlength="abc" />').maxLength).toBe(0);
+    expect(shapeOf('<input id="a" maxlength="-1" />').maxLength).toBe(0);
+  });
+
+  it('knows a textarea holds prose', () => {
+    expect(shapeOf('<textarea id="t" name="about"></textarea>').multiline).toBe(true);
+  });
+
+  it('works on a description with no element and no sources at all', () => {
+    expect(describeField({})).toEqual(ANY_SHAPE);
+    expect(describeField({ labelText: 'Full name' }).text).toBe('full name');
+  });
+
+  it('falls back to the element for a placeholder the description omits', () => {
+    document.body.innerHTML = '<input id="p" placeholder="+420 123 456 789" />';
+    const el = document.getElementById('p') as HTMLInputElement;
+    expect(describeField({ element: el }).placeholder).toBe('+420 123 456 789');
+  });
+});
+
+describe('reading a pattern', () => {
+  it('finds the digit limit, or says it does not know', () => {
+    expect(patternDigitLimit('[0-9]{9}')).toBe(9);
+    expect(patternDigitLimit('^\\d{9,12}$')).toBe(12);
+    expect(patternDigitLimit('[\\d]{8}')).toBe(8);
+    expect(patternDigitLimit('[A-Za-z ]+')).toBe(0);
+    expect(patternDigitLimit('')).toBe(0);
+  });
+
+  it('tells a literal plus from a quantifier', () => {
+    expect(patternAllowsPlus('\\+?[0-9]{9,12}')).toBe(true);
+    expect(patternAllowsPlus('[+0-9]{9,13}')).toBe(true);
+    expect(patternAllowsPlus('[0-9]{9}')).toBe(false);
+    expect(patternAllowsPlus('[0-9]+')).toBe(false);
+  });
+
+  it('recognises a control that can only hold digits', () => {
+    expect(isNumericControl(shape({ controlType: 'number' }))).toBe(true);
+    expect(isNumericControl(shape({ inputMode: 'numeric' }))).toBe(true);
+    expect(isNumericControl(shape({ inputMode: 'decimal' }))).toBe(true);
+    expect(isNumericControl(shape({ pattern: '[0-9]{9}' }))).toBe(true);
+    // A pattern that admits `+` is not a digits-only control.
+    expect(isNumericControl(shape({ pattern: '\\+?[0-9]{9,12}' }))).toBe(false);
+    expect(isNumericControl(shape({ controlType: 'tel' }))).toBe(false);
+  });
+
+  it('says() looks at everything readable about the field', () => {
+    expect(says(shape({ text: 'a | country code | b' }), /country[\s._-]?code/)).toBe(true);
+    expect(says(shape({ text: 'phone' }), /country[\s._-]?code/)).toBe(false);
+  });
+});
+
+describe('nameOrder', () => {
+  it('reads the order out of the source that names both halves', () => {
+    expect(nameOrder('jmeno a prijmeni')).toEqual({ surnameFirst: false, comma: false });
+    expect(nameOrder('prijmeni a jmeno')).toEqual({ surnameFirst: true, comma: false });
+    expect(nameOrder('prijmeni, jmeno')).toEqual({ surnameFirst: true, comma: true });
+    expect(nameOrder('surname and first name')).toEqual({ surnameFirst: true, comma: false });
+  });
+
+  it('ignores sources that name only one half', () => {
+    expect(nameOrder('prijmeni | full_name | your name')).toEqual({
+      surnameFirst: false,
+      comma: false,
+    });
+  });
+
+  it('does not read an order across two sources', () => {
+    expect(nameOrder('prijmeni | jmeno')).toEqual({ surnameFirst: false, comma: false });
+  });
+});
+
+describe('resolveTemplate', () => {
+  it('joins atoms into whatever shape the template describes', () => {
+    expect(resolveTemplate('{firstName} {lastName}', ctxOf())).toBe('Dias Nurgaliyev');
+    expect(resolveTemplate('{lastName}, {firstName}', ctxOf())).toBe('Nurgaliyev, Dias');
+    expect(resolveTemplate('{firstName}', ctxOf())).toBe('Dias');
+  });
+
+  it('accepts a derived name as readily as a stored one', () => {
+    expect(resolveTemplate('{givenName} {familyName}', ctxOf())).toBe('Dias Nurgaliyev');
+    expect(resolveTemplate('{phoneNational}', ctxOf())).toBe('123456789');
+  });
+
+  it('is empty for an empty template', () => {
+    expect(resolveTemplate('', ctxOf())).toBe('');
+  });
+
+  /** A model naming a field the profile does not have is answering another question. */
+  it('writes nothing at all when a key does not exist', () => {
+    expect(resolveTemplate('{firstName} {maidenName}', ctxOf())).toBe('');
+  });
+
+  it('resolves to the part that exists, without a dangling separator', () => {
+    expect(resolveTemplate('{firstName} {lastName}', ctxOf({ lastName: '' }))).toBe('Dias');
+    expect(resolveTemplate('{lastName}, {firstName}', ctxOf({ lastName: '' }))).toBe('Dias');
+    expect(resolveTemplate('{linkedin} / {github}', ctxOf({ github: '' }))).toBe(
+      'https://www.linkedin.com/in/dias-nur',
+    );
+  });
+
+  /**
+   * A composition that lost *every* atom is punctuation, not an answer: "+420 "
+   * in a phone box is a stub an employer cannot tell from a typo.
+   */
+  it('writes nothing when every atom the template asked for is missing', () => {
+    expect(resolveTemplate('{firstName} {lastName}', ctxOf({ firstName: '', lastName: '' }))).toBe(
+      '',
+    );
+    expect(resolveTemplate('+420 {phoneNational}', ctxOf({ phone: '' }))).toBe('');
+    expect(resolveTemplate('{city}, {country}', ctxOf())).toBe('');
+  });
+
+  it('a template with no placeholders is literal text and survives', () => {
+    expect(resolveTemplate('N/A', ctxOf())).toBe('N/A');
+  });
+
+  /**
+   * The protection prose depends on: a cover letter is a template too. Blank
+   * lines, the comma after "Dobrý den," and the trailing signature are the
+   * letter, not separators left over from substitution.
+   */
+  it('never reformats multi-line text it did not have to repair', () => {
+    const letter = 'Dobrý den,\n\nrád bych se ucházel o pozici.\n\n  S pozdravem,\n  Dias\n';
+    expect(resolveTemplate('{coverLetter}', ctxOf({}, letter))).toBe(letter);
+    expect(resolveTemplate(letter, ctxOf())).toBe(letter);
+  });
+
+  it('repairs a gap inside its own line, leaving the other lines standing', () => {
+    const template = '{firstName} {lastName}\n{email}\n{city} — {phone}';
+    expect(resolveTemplate(template, ctxOf({ city: '' }))).toBe(
+      'Dias Nurgaliyev\ndias@example.com\n+420123456789',
+    );
+  });
+});
+
+describe('the placeholder vocabulary', () => {
+  it('keeps the stored atoms and the computed ones apart', () => {
+    expect(isProfileValueKey('firstName')).toBe(true);
+    expect(isProfileValueKey('givenName')).toBe(false);
+    expect(isTemplateValueKey('givenName')).toBe(true);
+    expect(isTemplateValueKey('firstName')).toBe(true);
+    expect(isTemplateValueKey('maidenName')).toBe(false);
+  });
+
+  it('every name in the vocabulary resolves to something', () => {
+    for (const key of TEMPLATE_VALUE_KEYS) {
+      expect(resolveTemplate(`{${key}}`, ctxOf({}, 'a letter'))).not.toBe('');
+    }
+    expect(TEMPLATE_VALUE_KEYS).toHaveLength(PROFILE_VALUE_KEYS.length + DERIVED_VALUE_KEYS.length);
+  });
+
+  it('every default template is made of names that exist', () => {
+    for (const template of Object.values(DEFAULT_TEMPLATES)) {
+      for (const [, name] of template.matchAll(/\{([a-zA-Z]+)\}/g)) {
+        expect(isTemplateValueKey(name)).toBe(true);
+      }
+    }
+  });
+
+  it('every variant template is made of names that exist', () => {
+    for (const variants of Object.values(VARIANTS)) {
+      for (const variant of variants) {
+        for (const [, name] of variant.template.matchAll(/\{([a-zA-Z]+)\}/g)) {
+          expect(isTemplateValueKey(name)).toBe(true);
+        }
+      }
+    }
+  });
+});
+
+describe('selectTemplate', () => {
+  it('falls back to the type default when the field says nothing', () => {
+    expect(selectTemplate('fullName', ctxOf())).toBe('{givenName} {familyName}');
+    expect(selectTemplate('fullName', ctxOf(), ANY_SHAPE)).toBe('{givenName} {familyName}');
+  });
+
+  it('is empty for a field type that does not exist', () => {
+    expect(selectTemplate('maidenName', ctxOf(), ANY_SHAPE)).toBe('');
+    expect(resolveFieldType('maidenName', ctxOf())).toBe('');
+  });
+
+  it('leaves a type with no variants on its default', () => {
+    expect(selectTemplate('email', ctxOf(), shape({ maxLength: 3 }))).toBe('{email}');
+  });
+
+  it('a fragment is only ever chosen when something asked for it by name', () => {
+    // maxlength=4 fits "+420" and nothing else, and still does not get it.
+    expect(selectTemplate('phone', ctxOf(), shape({ maxLength: 4 }))).toBe('{phone}');
+    expect(selectTemplate('phone', ctxOf(), shape({ text: 'country code' }))).toBe(
+      '{phoneCountryCode}',
+    );
+  });
+
+  it('keeps the chosen spelling when nothing shorter fits either', () => {
+    const s = shape({ maxLength: 5 });
+    expect(selectTemplate('website', ctxOf({ website: 'my portfolio' }), s)).toBe('{website}');
+  });
+
+  it('prefers the fullest spelling that fits, not the first one', () => {
+    // "Ada Lovelace" (12) does not fit 11; initials (2) and "A. Lovelace" (11) do.
+    const ctx = ctxOf({ firstName: 'Ada', lastName: 'Lovelace' });
+    expect(selectTemplate('fullName', ctx, shape({ maxLength: 11 }))).toBe(
+      '{firstInitial}. {familyName}',
+    );
+    // Asked for "Příjmení, jméno" (13) but given 12 → the default fits, initials
+    // also fit and are not chosen: shorter is not better.
+    expect(selectTemplate('fullName', ctx, shape({ text: 'prijmeni, jmeno', maxLength: 12 }))).toBe(
+      '{givenName} {familyName}',
+    );
+  });
+});
+
+/**
+ * The table the whole layer exists for. Each row is a control as an ATS really
+ * writes it, the spelling selected for it, and what lands in the box. The test
+ * title carries `what → template`, so a regression says *which* rule changed
+ * rather than only that a string differs.
+ */
+const CASES: Array<{
+  what: string;
+  fieldType: string;
+  html: string;
+  template: string;
+  value: string;
+  profile?: Partial<Profile>;
+}> = [
+  // ── Name ──
+  {
+    what: 'Full name',
+    fieldType: 'fullName',
+    html: '<label for="f">Full name</label><input id="f" name="full_name" />',
+    template: '{givenName} {familyName}',
+    value: 'Dias Nurgaliyev',
+  },
+  {
+    what: 'Jméno a příjmení',
+    fieldType: 'fullName',
+    html: '<label for="f">Jméno a příjmení</label><input id="f" name="jmeno_prijmeni" />',
+    template: '{givenName} {familyName}',
+    value: 'Dias Nurgaliyev',
+  },
+  {
+    what: 'Příjmení a jméno (Czech forms really do ask in this order)',
+    fieldType: 'fullName',
+    html: '<label for="f">Příjmení a jméno</label><input id="f" name="cele_jmeno" />',
+    template: '{familyName} {givenName}',
+    value: 'Nurgaliyev Dias',
+  },
+  {
+    what: 'Surname, first name',
+    fieldType: 'fullName',
+    html: '<label for="f">Surname, first name</label><input id="f" name="name" />',
+    template: '{familyName}, {givenName}',
+    value: 'Nurgaliyev, Dias',
+  },
+  {
+    what: 'Initials',
+    fieldType: 'fullName',
+    html: '<label for="f">Initials</label><input id="f" name="initials" maxlength="4" />',
+    template: '{firstInitial}{lastInitial}',
+    value: 'DN',
+  },
+  {
+    what: 'Full name in a box too short for it (maxlength=13)',
+    fieldType: 'fullName',
+    html: '<label for="f">Name</label><input id="f" name="name" maxlength="13" />',
+    template: '{firstInitial}. {familyName}',
+    value: 'D. Nurgaliyev',
+  },
+  {
+    what: 'Full name in a box shorter still (maxlength=6)',
+    fieldType: 'fullName',
+    html: '<label for="f">Name</label><input id="f" name="name" maxlength="6" />',
+    template: '{firstInitial}{lastInitial}',
+    value: 'DN',
+  },
+  {
+    what: 'Surname, with the whole name typed into the first settings box',
+    fieldType: 'lastName',
+    html: '<label for="f">Příjmení</label><input id="f" name="prijmeni" />',
+    template: '{familyName}',
+    value: 'Nurgaliyev',
+    profile: { firstName: 'Dias Nurgaliyev', lastName: '' },
+  },
+  // ── Phone ──
+  {
+    what: 'Phone, unconstrained',
+    fieldType: 'phone',
+    html: '<label for="f">Phone</label><input id="f" name="phone" type="tel" />',
+    template: '{phone}',
+    value: '+420123456789',
+  },
+  {
+    what: 'Phone with pattern="[0-9]{9}" — the country code is unwelcome',
+    fieldType: 'phone',
+    html: '<label for="f">Telefon</label><input id="f" name="telefon" type="tel" pattern="[0-9]{9}" />',
+    template: '{phoneNational}',
+    value: '123456789',
+  },
+  {
+    what: 'Phone as <input type="number"> — a "+" would blank the field',
+    fieldType: 'phone',
+    html: '<label for="f">Phone</label><input id="f" name="phone" type="number" />',
+    template: '{phoneDigits}',
+    value: '420123456789',
+  },
+  {
+    what: 'Phone with maxlength="9"',
+    fieldType: 'phone',
+    html: '<label for="f">Phone</label><input id="f" name="phone" maxlength="9" />',
+    template: '{phoneNational}',
+    value: '123456789',
+  },
+  {
+    what: 'Phone whose placeholder demonstrates grouping',
+    fieldType: 'phone',
+    html: '<label for="f">Phone</label><input id="f" name="phone" placeholder="+420 123 456 789" />',
+    template: '{phoneSpaced}',
+    value: '+420 123 456 789',
+  },
+  {
+    what: 'A separate "Country code" box next to the number',
+    fieldType: 'phone',
+    html: '<label for="f">Phone country code</label><input id="f" name="phone_country_code" />',
+    template: '{phoneCountryCode}',
+    value: '+420',
+  },
+  {
+    what: 'Mobil (bez předvolby)',
+    fieldType: 'phone',
+    html: '<label for="f">Mobil (bez předvolby)</label><input id="f" name="mobil" />',
+    template: '{phoneNational}',
+    value: '123456789',
+  },
+  // ── Links ──
+  {
+    what: 'LinkedIn, unconstrained — whatever the user stored',
+    fieldType: 'linkedin',
+    html: '<label for="f">LinkedIn</label><input id="f" name="linkedin" />',
+    template: '{linkedin}',
+    value: 'https://www.linkedin.com/in/dias-nur',
+  },
+  {
+    what: 'LinkedIn username — the handle, not the URL',
+    fieldType: 'linkedin',
+    html: '<label for="f">LinkedIn username</label><input id="f" name="linkedin_username" />',
+    template: '{linkedinUser}',
+    value: 'dias-nur',
+  },
+  {
+    what: 'GitHub as <input type="url"> — a bare host would not validate',
+    fieldType: 'github',
+    html: '<label for="f">GitHub</label><input id="f" name="github" type="url" />',
+    template: '{githubUrl}',
+    value: 'https://github.com/diz1l',
+  },
+  {
+    what: 'GitHub URL asked of a profile that stored only a handle',
+    fieldType: 'github',
+    html: '<label for="f">GitHub URL</label><input id="f" name="github_url" />',
+    template: '{githubUrl}',
+    value: 'https://github.com/diz1l',
+    profile: { github: 'diz1l' },
+  },
+  {
+    what: 'Website domain',
+    fieldType: 'website',
+    html: '<label for="f">Domain</label><input id="f" name="site_domain" />',
+    template: '{websiteHost}',
+    value: 'dias.dev',
+    profile: { website: 'https://www.dias.dev/cv' },
+  },
+  // ── City ──
+  {
+    what: 'City — the town on its own',
+    fieldType: 'city',
+    html: '<label for="f">City</label><input id="f" name="city" />',
+    template: '{cityName}',
+    value: 'Praha',
+  },
+  {
+    what: 'Location (city, country) — as wide as the profile holds',
+    fieldType: 'city',
+    html: '<label for="f">Location (city, country)</label><input id="f" name="location" />',
+    template: '{city}',
+    value: 'Praha, Czechia',
+  },
+  // ── Salary ──
+  {
+    what: 'Salary as text — currency and all',
+    fieldType: 'salary',
+    html: '<label for="f">Salary expectation</label><input id="f" name="salary" />',
+    template: '{salary}',
+    value: '80 000 Kč',
+  },
+  {
+    what: 'Salary as <input type="number"> — "80 000 Kč" would blank the field',
+    fieldType: 'salary',
+    html: '<label for="f">Expected salary</label><input id="f" name="salary" type="number" />',
+    template: '{salaryNumber}',
+    value: '80000',
+  },
+  // ── An atom that is not there ──
+  {
+    what: 'Full name with no surname in the profile — no dangling space',
+    fieldType: 'fullName',
+    html: '<label for="f">Full name</label><input id="f" name="full_name" />',
+    template: '{givenName} {familyName}',
+    value: 'Dias',
+    profile: { firstName: 'Dias', lastName: '' },
+  },
+  {
+    what: 'Příjmení a jméno with no surname — no leading separator either',
+    fieldType: 'fullName',
+    html: '<label for="f">Příjmení a jméno</label><input id="f" name="cele_jmeno" />',
+    template: '{familyName} {givenName}',
+    value: 'Dias',
+    profile: { firstName: 'Dias', lastName: '' },
+  },
+  {
+    what: 'Country code with no phone in the profile — nothing, not "+"',
+    fieldType: 'phone',
+    html: '<label for="f">Country code</label><input id="f" name="country_code" />',
+    template: '{phoneCountryCode}',
+    value: '',
+    profile: { phone: '' },
+  },
+];
+
+describe('form field → template → value', () => {
+  for (const row of CASES) {
+    it(`${row.what} → ${row.template}`, () => {
+      const s = shapeOf(row.html);
+      const ctx = ctxOf(row.profile);
+      expect(selectTemplate(row.fieldType, ctx, s)).toBe(row.template);
+      expect(resolveFieldType(row.fieldType, ctx, s)).toBe(row.value);
+    });
+  }
+});
+
+describe('composition through fillPage', () => {
+  afterEach(() => {
+    removeAllHighlights();
+    forgetCoverTargets();
+  });
+
+  const valueOf = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
+
+  it('fills the Czech single-box name in the order the label asks for', () => {
+    document.body.innerHTML =
+      '<form><div><label for="n">Příjmení a jméno</label>' +
+      '<input id="n" name="cele_jmeno" /></div></form>';
+    fillPage(PROFILE);
+    expect(valueOf('n')).toBe('Nurgaliyev Dias');
+  });
+
+  it('drops the country code for a phone box that validates nine digits', () => {
+    document.body.innerHTML =
+      '<form><div><label for="p">Telefon</label>' +
+      '<input id="p" name="telefon" type="tel" pattern="[0-9]{9}" /></div></form>';
+    fillPage(PROFILE);
+    expect(valueOf('p')).toBe('123456789');
+  });
+
+  /** No key, no network, no settings: composition is the default behaviour. */
+  it('needs nothing but the profile — no classifier is consulted', () => {
+    document.body.innerHTML =
+      '<form><div><label for="n">Full name</label><input id="n" name="full_name" /></div>' +
+      '<div><label for="c">City</label><input id="c" name="city" /></div></form>';
+    const summary = fillPage(PROFILE);
+    expect(valueOf('n')).toBe('Dias Nurgaliyev');
+    expect(valueOf('c')).toBe('Praha');
+    expect(summary.high + summary.medium).toBe(2);
+  });
+
+  /**
+   * An atom the profile does not hold is still reported as missing — the
+   * composition layer must not paper over it by writing half a value.
+   */
+  it('reports an empty atom as missing data rather than writing a stub', () => {
+    document.body.innerHTML =
+      '<form><div><label for="p">Phone country code</label>' +
+      '<input id="p" name="phone_country_code" /></div></form>';
+    const summary = fillPage({ ...PROFILE, phone: '' });
+    expect(valueOf('p')).toBe('');
+    expect(summary.noData).toBe(1);
+    expect(summary.missingFields).toEqual(['phone']);
+  });
+});
+
+describe('resolveAnswer', () => {
+  it('resolves a field type', () => {
+    expect(resolveAnswer('email', ctxOf())).toBe('dias@example.com');
+  });
+
+  it('resolves a template the model composed itself', () => {
+    expect(resolveAnswer('{lastName}, {firstName}', ctxOf())).toBe('Nurgaliyev, Dias');
+  });
+
+  it('answers a shaped field with the shaped spelling', () => {
+    expect(resolveAnswer('phone', ctxOf(), shape({ pattern: '[0-9]{9}' }))).toBe('123456789');
+  });
+
+  it('writes nothing for an answer that is neither', () => {
+    expect(resolveAnswer('maidenName', ctxOf())).toBe('');
+    expect(resolveAnswer('{maidenName}', ctxOf())).toBe('');
+  });
+});

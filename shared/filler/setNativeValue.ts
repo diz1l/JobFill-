@@ -1,8 +1,7 @@
 /**
- * Write a value into a framework-controlled input/textarea while
- * triggering the synthetic events React/Vue/Angular listen to.
- *
- * Spec: FR-3.1
+ * Write a value into a framework-controlled input/textarea, going through the
+ * prototype's native setter so React/Vue/Angular see the change and the
+ * `input` / `change` events they listen for actually fire.
  */
 export function setNativeValue(
   el: HTMLInputElement | HTMLTextAreaElement,

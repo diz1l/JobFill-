@@ -9,6 +9,7 @@ import {
 import * as filler from '../shared/filler';
 import { removeAllHighlights } from '../shared/filler/highlight';
 import { forgetCoverTargets, resolveCoverTarget } from '../shared/filler/coverTarget';
+import { describeMissingData, splitMissingData } from '../shared/filler/missingData';
 import { buildFingerprint, type FieldFingerprint } from '../shared/field-matcher/fingerprint';
 import { MAX_CLASSIFY_FIELDS } from '../shared/messages';
 import {
@@ -18,8 +19,6 @@ import {
   type LlmFieldConfidence,
   type Profile,
 } from '../shared/types';
-
-// ─── setNativeValue (FR-3.1 / FR-3.2) ────────────────────────────────────────
 
 describe('setNativeValue', () => {
   afterEach(() => {
@@ -122,8 +121,6 @@ describe('setNativeValue', () => {
     }
   });
 });
-
-// ─── selectStrategy (FR-3.3) ─────────────────────────────────────────────────
 
 describe('fillSelect', () => {
   function select(...options: (string | [string, string])[]): HTMLSelectElement {
@@ -336,10 +333,28 @@ describe('fillPage', () => {
       '<form>' + field('cl', 'Cover letter', '<textarea id="cl" name="cover_letter"></textarea>') + '</form>',
     );
     const summary = fillPage(PROFILE);
-    // No text supplied → nothing written, but the target is now known.
     expect(valueOf('cl')).toBe('');
-    expect(summary.unrecognized).toBe(1);
+    // Recognised, not unrecognised: we knew exactly what this field was.
+    expect(summary.unrecognized).toBe(0);
+    expect(summary.noData).toBe(1);
+    expect(summary.missingFields).toEqual(['coverLetter']);
     expect(resolveCoverTarget()).toBe(document.getElementById('cl'));
+  });
+
+  /**
+   * A cover letter is generated text in a box an employer reads: it is reported
+   * amber ("check this") even when the match itself was unambiguous.
+   */
+  it('never highlights a cover letter green, however confident the match', () => {
+    render(
+      '<form>' + field('cl', 'Cover letter', '<textarea id="cl" name="cover_letter"></textarea>') + '</form>',
+    );
+    const s = fillPage(PROFILE, { coverLetterText: 'Dear Acme,' });
+    expect(valueOf('cl')).toBe('Dear Acme,');
+    expect(document.getElementById('cl')!.classList.contains('__jobfill-medium')).toBe(true);
+    expect(document.getElementById('cl')!.classList.contains('__jobfill-high')).toBe(false);
+    expect(s.medium).toBe(1);
+    expect(s.high).toBe(0);
   });
 
   it('dispatches bubbling input/change events for every field it writes', () => {
@@ -352,20 +367,23 @@ describe('fillPage', () => {
   });
 
   // ── Counters ──
-  it('keeps high + medium + unrecognized + aiQuestions + fileInputs === total', () => {
+  it('keeps high + medium + unrecognized + noData + aiQuestions + fileInputs === total', () => {
     render(
       '<form>' +
         field('fn', 'First name', '<input id="fn" name="first_name" />') +
         field('cv', 'Résumé', '<input id="cv" type="file" name="resume" />') +
         field('q1', 'Why do you want to work here?', '<textarea id="q1" name="q_1"></textarea>') +
         field('zz', 'Widget identifier', '<input id="zz" name="widget_identifier_9" />') +
+        // recognised, and this profile has nothing for it
+        field('cl', 'Cover letter', '<textarea id="cl" name="cover_letter"></textarea>') +
         '</form>',
     );
     const s = fillPage(PROFILE);
-    expect(s.high + s.medium + s.unrecognized + s.aiQuestions + s.fileInputs).toBe(s.total);
+    expect(s.high + s.medium + s.unrecognized + s.noData + s.aiQuestions + s.fileInputs).toBe(s.total);
     expect(s.fileInputs).toBe(1);
     expect(s.aiQuestions).toBe(1);
     expect(s.unrecognized).toBe(1);
+    expect(s.noData).toBe(1);
     expect(s.high + s.medium).toBe(1);
   });
 
@@ -405,14 +423,72 @@ describe('fillPage', () => {
     expect(valueOf('amb')).toBe('');
   });
 
-  it('skips a recognised field when the profile value is empty', () => {
+  // ── "We understood it, we have nothing for it" ──
+
+  it('reports a recognised field with an empty profile value as noData, not unrecognized', () => {
     render('<form>' + field('fn', 'First name', '<input id="fn" name="first_name" />') + '</form>');
     const s = fillPage(createEmptyProfile());
-    expect(s.unrecognized).toBe(1);
+    expect(s.noData).toBe(1);
+    expect(s.unrecognized).toBe(0);
     expect(s.high + s.medium).toBe(0);
     expect(valueOf('fn')).toBe('');
-    // Skipped silently — no highlight either
-    expect(document.getElementById('fn')!.className).toBe('');
+    // …and it says so on the page, instead of the previous silent skip.
+    expect(document.getElementById('fn')!.classList.contains('__jobfill-empty')).toBe(true);
+  });
+
+  it('names the field types it had no data for', () => {
+    render(
+      '<form>' +
+        field('fn', 'First name', '<input id="fn" name="first_name" />') +
+        field('ph', 'Phone', '<input id="ph" type="tel" name="phone" />') +
+        field('cl', 'Cover letter', '<textarea id="cl" name="cover_letter"></textarea>') +
+        '</form>',
+    );
+    const s = fillPage(createEmptyProfile());
+    expect(s.noData).toBe(3);
+    expect(s.missingFields).toEqual(['firstName', 'phone', 'coverLetter']);
+  });
+
+  it('counts controls but lists types only once each', () => {
+    render(
+      '<form>' +
+        field('e1', 'Email', '<input id="e1" name="email" autocomplete="email" />') +
+        field('e2', 'Confirm email', '<input id="e2" name="email_confirm" autocomplete="email" />') +
+        '</form>',
+    );
+    const s = fillPage(createEmptyProfile());
+    expect(s.noData).toBe(2);
+    expect(s.missingFields).toEqual(['email']);
+  });
+
+  it('reports nothing missing when the profile covers the page', () => {
+    render('<form>' + field('fn', 'First name', '<input id="fn" name="first_name" />') + '</form>');
+    const s = fillPage(PROFILE);
+    expect(s.noData).toBe(0);
+    expect(s.missingFields).toEqual([]);
+  });
+
+  /**
+   * A `<select>` we recognised, holding a value the page has no option for, is a
+   * *third* thing: the data exists, it just does not fit. Nothing the user can
+   * add in settings fixes it, so it stays out of `noData`.
+   */
+  it('keeps an unfillable select in unrecognized, not in noData', () => {
+    render(
+      '<form>' +
+        field('wp', 'Work permit', '<select id="wp" name="work_permit"><option>Alpha</option></select>') +
+        '</form>',
+    );
+    const s = fillPage(PROFILE);
+    expect(s.unrecognized).toBe(1);
+    expect(s.noData).toBe(0);
+  });
+
+  it('does not offer a noData field to the LLM pass — a second opinion adds no value', () => {
+    render('<form>' + field('fn', 'First name', '<input id="fn" name="first_name" />') + '</form>');
+    const seen: FieldFingerprint[] = [];
+    fillPage(createEmptyProfile(), { onUnresolved: (fp) => seen.push(fp) });
+    expect(seen).toEqual([]);
   });
 
   it('counts high and medium confidence separately', () => {
@@ -452,7 +528,6 @@ describe('fillPage', () => {
     expect(document.getElementById('wp')!.classList.contains('__jobfill-none')).toBe(true);
   });
 
-  // ── P0-4: defence in depth ──
   it('never writes into a credential field, even when the matcher wants to (P0-4)', () => {
     render(
       '<form>' +
@@ -535,13 +610,185 @@ describe('fillPage', () => {
       unrecognized: 0,
       fileInputs: 0,
       aiQuestions: 0,
+      noData: 0,
+      missingFields: [],
     });
   });
 });
 
-// ─── classifyUnresolvedFields — the FR-5.3 second pass ───────────────────────
+/**
+ * The form the extension was first run against, reduced to the four controls
+ * that matter: a CV file input, the 6000-character motivation letter, and two
+ * consent checkboxes. The letter came back empty and the summary said "skipped".
+ *
+ * These tests are about the *insertion* half of that bug, not about scoring, so
+ * the textarea carries the `name` the matcher already keys on — they must not go
+ * red when the scorer is retuned.
+ */
+const CZECH_FORM =
+  '<form>' +
+  '<div><label for="cv">Životopis</label><input id="cv" type="file" name="cv" /></div>' +
+  '<div><label for="dopis">Přiložte motivační dopis</label>' +
+  '<textarea id="dopis" name="motivacni_dopis" maxlength="6000"></textarea>' +
+  '<span class="counter">0 / 6000</span></div>' +
+  '<div><label><input id="gdpr" type="checkbox" name="gdpr_souhlas" />' +
+  'Souhlasím se zpracováním osobních údajů</label></div>' +
+  '<div><label><input id="news" type="checkbox" name="marketing_souhlas" />' +
+  'Chci dostávat nabídky práce e-mailem</label></div>' +
+  '<button type="submit">Odeslat</button>' +
+  '</form>';
+
+describe('the Czech application form (first live run)', () => {
+  beforeEach(() => {
+    forgetCoverTargets();
+  });
+
+  afterEach(() => {
+    removeAllHighlights();
+    document.body.innerHTML = '';
+  });
+
+  it('writes the letter into the textarea and marks it "check this"', () => {
+    render(CZECH_FORM);
+    const s = fillPage(PROFILE, { coverLetterText: 'Dobrý den,\n\nrád bych se ucházel…' });
+
+    const letter = document.getElementById('dopis') as HTMLTextAreaElement;
+    expect(letter.value).toBe('Dobrý den,\n\nrád bych se ucházel…');
+    expect(letter.classList.contains('__jobfill-medium')).toBe(true);
+    expect(s.medium).toBe(1);
+  });
+
+  it('never touches either consent checkbox (FR-2.6 / S-4)', () => {
+    render(CZECH_FORM);
+    fillPage(PROFILE, { coverLetterText: 'Dobrý den,' });
+
+    for (const id of ['gdpr', 'news']) {
+      const box = document.getElementById(id) as HTMLInputElement;
+      expect(box.checked).toBe(false);
+      // Not filled, and not even decorated: a checkbox is not a fill target.
+      expect(box.className).toBe('');
+    }
+  });
+
+  it('counts consent checkboxes out of the pass entirely', () => {
+    render(CZECH_FORM);
+    // 1 file input + 1 textarea. The two checkboxes and the submit button are
+    // not enumerable controls at all, so they cannot inflate any counter.
+    expect(fillPage(PROFILE, { coverLetterText: 'x' }).total).toBe(2);
+  });
+
+  it('highlights the CV input without filling it (FR-2.5)', () => {
+    render(CZECH_FORM);
+    const s = fillPage(PROFILE, { coverLetterText: 'Dobrý den,' });
+
+    const cv = document.getElementById('cv') as HTMLInputElement;
+    expect(cv.value).toBe('');
+    expect(cv.classList.contains('__jobfill-file')).toBe(true);
+    expect(s.fileInputs).toBe(1);
+  });
+
+  it('explains the empty letter instead of silently skipping it (the original bug)', () => {
+    render(CZECH_FORM);
+    // A brand-new install: a profile exists, no cover template does.
+    const s = fillPage(PROFILE, { coverLetterText: '' });
+
+    const letter = document.getElementById('dopis') as HTMLTextAreaElement;
+    expect(letter.value).toBe('');
+    expect(s.noData).toBe(1);
+    expect(s.unrecognized).toBe(0);
+    expect(s.missingFields).toEqual(['coverLetter']);
+    expect(letter.classList.contains('__jobfill-empty')).toBe(true);
+    expect(describeMissingData(s.missingFields)).toContain('No cover letter template yet');
+  });
+
+  it('leaves the letter field findable for "Generate → Insert" afterwards', () => {
+    render(CZECH_FORM);
+    fillPage(PROFILE, { coverLetterText: '' });
+    expect(resolveCoverTarget()).toBe(document.getElementById('dopis'));
+
+    // …and still findable once the WeakRef hint is gone (SPA re-render, second
+    // visit): the pink outline is enough to identify it.
+    forgetCoverTargets();
+    expect(resolveCoverTarget()).toBe(document.getElementById('dopis'));
+  });
+});
+
+describe('describeMissingData', () => {
+  it('says nothing when nothing is missing', () => {
+    expect(describeMissingData([])).toBe('');
+  });
+
+  it('offers both exits for a missing cover letter', () => {
+    const text = describeMissingData(['coverLetter']);
+    expect(text).toContain('settings');
+    expect(text).toContain('generate');
+  });
+
+  it('names a single missing profile field in the singular', () => {
+    expect(describeMissingData(['phone'])).toBe(
+      'Your profile has no phone — add it in JobFill settings.',
+    );
+  });
+
+  it('joins two missing profile fields', () => {
+    expect(describeMissingData(['email', 'phone'])).toContain('email and phone');
+  });
+
+  it('joins three with a comma and an "and"', () => {
+    expect(describeMissingData(['email', 'phone', 'city'])).toContain('email, phone and city');
+  });
+
+  it('stops naming after three and counts the rest', () => {
+    const text = describeMissingData(['email', 'phone', 'city', 'github', 'website']);
+    expect(text).toContain('email, phone, city and 2 more');
+  });
+
+  it('covers both halves when the letter and the profile are both empty', () => {
+    const text = describeMissingData(['coverLetter', 'email']);
+    expect(text).toContain('cover letter template');
+    expect(text).toContain('Your profile has no email');
+  });
+
+  it('de-duplicates repeated field types', () => {
+    expect(describeMissingData(['email', 'email'])).toContain('no email —');
+  });
+
+  it('drops a field type it has no human name for, rather than printing it raw', () => {
+    expect(describeMissingData(['someInternalType'])).toBe('');
+    expect(describeMissingData(['someInternalType', 'phone'])).toBe(
+      'Your profile has no phone — add it in JobFill settings.',
+    );
+  });
+
+  it('splits the two kinds of missing data apart', () => {
+    expect(splitMissingData(['coverLetter', 'phone', 'phone'])).toEqual({
+      coverLetter: true,
+      profileFields: ['phone'],
+    });
+  });
+});
+
+/**
+ * A control the heuristics genuinely cannot name — the subject every test below
+ * needs, since a field the matcher *can* name never reaches the LLM pass at all.
+ *
+ * It used to be "Preferred name", which stopped being opaque once the scorer
+ * learned to trust a visible label on its own: the heuristics started filling it
+ * and this whole block quietly lost its subject. This label sits outside every
+ * dictionary rule and the only other signal is an opaque automation id, so the
+ * first test asserts the fixture is still unnameable rather than trusting it.
+ */
+const OPAQUE_LABEL = 'Widget identifier';
+const OPAQUE_FIELD = field('op', OPAQUE_LABEL, '<input id="op" data-automation-id="a7f3c91e" />');
 
 describe('classifyUnresolvedFields', () => {
+  it('the opaque fixture really is unnameable by the heuristics', () => {
+    render(`<form>${OPAQUE_FIELD}</form>`);
+    const s = fillPage(PROFILE);
+    expect(s.unrecognized).toBe(1);
+    expect(valueOf('op')).toBe('');
+  });
+
   afterEach(() => {
     removeAllHighlights();
     forgetCoverTargets();
@@ -555,7 +802,6 @@ describe('classifyUnresolvedFields', () => {
     return candidates;
   }
 
-  /** A transport that answers with a fixed map and records what it was given. */
   function transportOf(answer: Record<string, string>) {
     return vi.fn(async (payload: string[]) => {
       void payload;
@@ -574,12 +820,13 @@ describe('classifyUnresolvedFields', () => {
       '<form>' +
         // recognised and filled — settled, not a candidate
         field('fn', 'First name', '<input id="fn" name="first_name" />') +
-        // recognised, but this profile has no city — also settled
+        // recognised, but this profile has no city — settled too, as `noData`:
+        // asking the model to name it again cannot produce a value we lack
         field('cty', 'City', '<input id="cty" name="city" />') +
         // an open question — belongs to the AI *answering* path, not to this one
         field('q1', 'Why do you want to work here?', '<textarea id="q1" name="q_1"></textarea>') +
-        // opaque: the only signal is a label, which scores 20 against a 35 threshold
-        field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') +
+        // opaque: no signal any dictionary rule matches
+        OPAQUE_FIELD +
         // an outright near-tie the scorer downgraded to low
         field('amb', 'GitHub / LinkedIn', '<input id="amb" name="github_linkedin" />') +
         '</form>',
@@ -590,10 +837,10 @@ describe('classifyUnresolvedFields', () => {
     expect(candidates.map((fp) => fp.element.id).sort()).toEqual(['amb', 'op']);
   });
 
-  // ── The opt-in (requirement 1) ──
+  // ── The opt-in ──
 
   it('sends nothing at all while the setting is off', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
     const classify = transportOf({ '0': 'firstName' });
 
     const result = await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
@@ -607,7 +854,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('is off for the settings a fresh install ships with', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
     const classify = transportOf({ '0': 'firstName' });
 
     await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
@@ -631,10 +878,10 @@ describe('classifyUnresolvedFields', () => {
     expect(result.sent).toBe(0);
   });
 
-  // ── The medium ceiling (requirement 2) ──
+  // ── The medium ceiling ──
 
   it('fills a classified field and highlights it medium — never high', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
 
     const result = await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
       enabled: true,
@@ -648,7 +895,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('replaces the grey "unrecognised" outline with the amber "check this" one', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
     const candidates = unresolvedAfterFill();
     expect(classes('op')).toContain('__jobfill-none');
 
@@ -673,10 +920,10 @@ describe('classifyUnresolvedFields', () => {
     expect(allowed).toBe('medium');
   });
 
-  // ── Silent failure (requirement 6) ──
+  // ── Silent failure ──
 
   it('stays silent when the transport rejects (no key, no network, timeout)', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
     const classify = vi.fn(async () => {
       throw new Error('Groq API key is not configured.');
     });
@@ -692,7 +939,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('stays silent when the worker answers with nothing usable', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
 
     const result = await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
       enabled: true,
@@ -704,7 +951,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('ignores indices and keys that do not address the batch', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
 
     const result = await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
       enabled: true,
@@ -716,7 +963,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('ignores a field type the profile has nothing for', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
 
     const result = await classifyUnresolvedFields({ ...PROFILE, github: '' }, unresolvedAfterFill(), {
       enabled: true,
@@ -728,7 +975,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('ignores a field type that does not exist at all', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
 
     // The API client drops unknown types before this point; if one ever slipped
     // through, it resolves to no value and therefore writes nothing.
@@ -741,10 +988,58 @@ describe('classifyUnresolvedFields', () => {
     expect(valueOf('op')).toBe('');
   });
 
+  /**
+   * The composition case is exactly the one the model is useful for: a label the
+   * dictionary has no rule for, whose answer is two atoms joined. An answer that
+   * is a *template* is resolved here, in the page, against a profile the model
+   * never saw — it named `lastName` and `firstName`, not Ada Lovelace.
+   */
+  it('resolves an answer that is a template, not a field type', async () => {
+    render('<form>' + OPAQUE_FIELD + '</form>');
+
+    const result = await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
+      enabled: true,
+      classify: transportOf({ '0': '{lastName}, {firstName}' }),
+    });
+
+    expect(result.filled).toBe(1);
+    expect(valueOf('op')).toBe('Lovelace, Ada');
+    expect(classes('op')).toContain('__jobfill-medium');
+  });
+
+  it('writes nothing for a template whose atoms the profile does not hold', async () => {
+    render('<form>' + OPAQUE_FIELD + '</form>');
+
+    const result = await classifyUnresolvedFields(
+      { ...PROFILE, firstName: '', lastName: '' },
+      unresolvedAfterFill(),
+      { enabled: true, classify: transportOf({ '0': '{firstName} {lastName}' }) },
+    );
+
+    expect(result.filled).toBe(0);
+    expect(valueOf('op')).toBe('');
+  });
+
+  it('remembers a cover-letter target whether the answer was a type or a template', async () => {
+    render('<form><textarea id="op" name="a7f3c91e"></textarea></form>');
+
+    await classifyUnresolvedFields(PROFILE, unresolvedAfterFill(), {
+      enabled: true,
+      classify: transportOf({ '0': '{coverLetter}' }),
+      coverLetterText: 'Dear Acme,',
+    });
+
+    expect(valueOf('op')).toBe('Dear Acme,');
+    // Cleared so the answer cannot come from the highlight classes: what is left
+    // is the remembered target itself.
+    removeAllHighlights();
+    expect(resolveCoverTarget()).toBe(document.getElementById('op'));
+  });
+
   // ── The page moved on while the request was in flight ──
 
   it('never overwrites what the user typed while the request was in flight', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
     const candidates = unresolvedAfterFill();
 
     const result = await classifyUnresolvedFields(PROFILE, candidates, {
@@ -760,7 +1055,7 @@ describe('classifyUnresolvedFields', () => {
   });
 
   it('skips a control that has left the DOM', async () => {
-    render('<form>' + field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') + '</form>');
+    render('<form>' + OPAQUE_FIELD + '</form>');
     const candidates = unresolvedAfterFill();
 
     const result = await classifyUnresolvedFields(PROFILE, candidates, {
@@ -774,7 +1069,7 @@ describe('classifyUnresolvedFields', () => {
     expect(result.filled).toBe(0);
   });
 
-  // ── Defence in depth (P0-4): the model does not get to override this ──
+  // ── Defence in depth: the model does not get to override this ──
 
   it('refuses a credential field even when the model calls it a name field', async () => {
     render('<form><input id="pw" type="text" name="account" aria-label="Password" /></form>');
@@ -860,7 +1155,7 @@ describe('classifyUnresolvedFields', () => {
     expect(resolveCoverTarget()).toBe(document.getElementById('cl'));
   });
 
-  // ── Volume (requirement 7) ──
+  // ── Volume ──
 
   it('never puts more than MAX_CLASSIFY_FIELDS fingerprints on the wire', async () => {
     const many = Array.from(
@@ -878,14 +1173,12 @@ describe('classifyUnresolvedFields', () => {
     expect(result.sent).toBe(MAX_CLASSIFY_FIELDS);
   });
 
-  // ── S-3 ──
-
   it('puts field fingerprints on the wire and nothing else (S-3)', async () => {
     render(
       '<form>' +
         field('fn', 'First name', '<input id="fn" name="first_name" />') +
         field('em', 'Email', '<input id="em" name="email" autocomplete="email" />') +
-        field('op', 'Preferred name', '<input id="op" data-automation-id="a7f3c91e" />') +
+        OPAQUE_FIELD +
         '</form>',
     );
 
@@ -904,20 +1197,28 @@ describe('classifyUnresolvedFields', () => {
     }
     expect(sent).not.toContain('privately');
     // …while the attributes that make classification possible are all there.
-    expect(sent).toContain('Preferred name');
+    expect(sent).toContain(OPAQUE_LABEL);
     expect(sent.split('\n')).toHaveLength(1); // only the unrecognised field
   });
 });
 
-// ─── Barrel ──────────────────────────────────────────────────────────────────
-
 describe('shared/filler barrel', () => {
   it('exposes exactly the documented surface', () => {
     expect(Object.keys(filler).sort()).toEqual([
+      'ANY_SHAPE',
+      'COVER_LETTER_FIELD',
+      'DEFAULT_TEMPLATES',
+      'DERIVED_VALUE_KEYS',
       'LLM_FIELD_CONFIDENCE',
+      'MISSING_DATA_LABELS',
+      'PROFILE_VALUE_KEYS',
+      'TEMPLATE_VALUE_KEYS',
+      'VARIANTS',
       'activeHighlightCount',
       'classifyUnresolvedFields',
       'countFillableControls',
+      'describeField',
+      'describeMissingData',
       'fillPage',
       'fillSelect',
       'forgetCoverTargets',
@@ -926,14 +1227,21 @@ describe('shared/filler barrel', () => {
       'isFillableControl',
       'isInlineButtonAnchor',
       'isInsideAuthForm',
+      'isProfileValueKey',
       'isSensitiveControl',
+      'isTemplateValueKey',
       'looksLikeAuthPage',
       'rememberFocusedField',
       'rememberRecognizedCoverField',
       'removeAllHighlights',
       'removeStyles',
+      'resolveAnswer',
       'resolveCoverTarget',
+      'resolveFieldType',
+      'resolveTemplate',
+      'selectTemplate',
       'setNativeValue',
+      'splitMissingData',
     ]);
   });
 

@@ -31,8 +31,6 @@ afterEach(() => {
   styleEl()?.remove();
 });
 
-// ─── Stylesheet lifecycle (NFR-4) ────────────────────────────────────────────
-
 describe('stylesheet lifecycle', () => {
   it('injects nothing until the first highlight', () => {
     expect(styleEl()).toBeNull();
@@ -108,8 +106,6 @@ describe('stylesheet lifecycle', () => {
     }
   });
 });
-
-// ─── Applying and clearing ───────────────────────────────────────────────────
 
 describe('highlightField', () => {
   const confidences = ['high', 'medium', 'low', 'none', 'file', 'ai'] as const;
@@ -191,8 +187,6 @@ describe('highlightField', () => {
     expect(activeHighlightCount()).toBe(0);
   });
 });
-
-// ─── removeAllHighlights ─────────────────────────────────────────────────────
 
 describe('removeAllHighlights', () => {
   it('clears every tracked highlight and the stylesheet', () => {

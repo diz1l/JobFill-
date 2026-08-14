@@ -1,11 +1,11 @@
 /**
  * The floating "Fill" button and the result toast.
  *
- * NFR-4 (page isolation): everything lives inside a **closed shadow root** on a
- * single `<jobfill-ui>` host, so no stylesheet is injected into the page, page
- * CSS cannot restyle our UI, and page JS cannot reach into it. The host is
- * mounted lazily on first use and removed again as soon as nothing is visible —
- * a page you never focus a field on never receives a single node from us.
+ * Everything lives inside a **closed shadow root** on a single `<jobfill-ui>`
+ * host, so no stylesheet is injected into the page, page CSS cannot restyle our
+ * UI, and page JS cannot reach into it. The host is mounted lazily on first use
+ * and removed as soon as nothing is visible — a page you never focus a field on
+ * never receives a single node from us.
  */
 
 const HOST_TAG = 'jobfill-ui';
@@ -47,6 +47,8 @@ const UI_CSS = `
   color: #f1f5f9;
   border-radius: 8px;
   font: 500 12px/1.5 system-ui, sans-serif;
+  /* Counters on one line, the "what to do about it" hint on the next. */
+  white-space: pre-line;
   box-shadow: 0 4px 20px rgba(0,0,0,.35);
   pointer-events: none;
   opacity: 0;

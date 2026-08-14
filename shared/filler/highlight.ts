@@ -1,18 +1,31 @@
 import type { FieldConfidence } from '../types';
 
 /**
- * Confidence highlighting for page fields (FR-3.5).
+ * Confidence highlighting for page fields.
  *
  * Unlike the inline button this cannot live in a shadow root — the outlines are
- * drawn on the *page's* elements, so a stylesheet has to exist in the page.
- * NFR-4 is satisfied instead by strict bookkeeping: every highlight owns its
- * timer and click listener, and the stylesheet is removed again the moment the
+ * drawn on the *page's* elements, so a stylesheet has to exist in the page. We
+ * stay out of the page's way by strict bookkeeping instead: every highlight owns
+ * its timer and click listener, and the stylesheet is removed the moment the
  * last highlight is dismissed.
  */
 
 const STYLE_ID = '__jobfill-styles';
 const DISMISS_ATTR = 'data-jobfill-dismiss';
-const CONFIDENCE_CLASSES = ['high', 'medium', 'low', 'none', 'file', 'ai'] as const;
+const CONFIDENCE_CLASSES = ['high', 'medium', 'low', 'none', 'file', 'ai', 'empty'] as const;
+
+/**
+ * What an outline says, beyond the four confidence levels:
+ *
+ * - `file`  — we never fill this, attach it yourself;
+ * - `ai`    — an open question, the model can draft an answer;
+ * - `empty` — **we know what this field is and have no data for it.** Visually
+ *   distinct from `none` on purpose: `none` means "we did not understand this",
+ *   `empty` means "we understood it, your profile / templates are missing the
+ *   value". The two look identical to the user otherwise, and only one of them
+ *   is fixable in settings.
+ */
+export type HighlightKind = FieldConfidence | 'file' | 'ai' | 'empty';
 
 /**
  * These are deliberately NOT the same hues as the extension-UI confidence tokens
@@ -27,6 +40,7 @@ const CONFIDENCE_CLASSES = ['high', 'medium', 'low', 'none', 'file', 'ai'] as co
  *   none  #6b7280 — 4.83 : 1 on white, 3.91 : 1 on #111
  *   ai    #7c3aed — 5.70 : 1 on white, 3.31 : 1 on #111
  *   file  #2563eb — 5.17 : 1 on white, 3.65 : 1 on #111
+ *   empty #db2777 — 4.60 : 1 on white, 4.11 : 1 on #111
  *
  * The previous palette (#22c55e / #eab308 / #9ca3af) scored 2.28 / 1.92 / 2.54
  * on white — effectively invisible on a normal job board.
@@ -55,6 +69,11 @@ const HIGHLIGHT_CSS = `
   outline-offset: 1px !important;
   background-color: rgba(124,58,237,0.08) !important;
 }
+.__jobfill-empty {
+  outline: 2px dashed #db2777 !important;
+  outline-offset: 1px !important;
+  background-color: rgba(219,39,119,0.08) !important;
+}
 `;
 
 interface ActiveHighlight {
@@ -77,7 +96,7 @@ function ensureStyles(): void {
 
 export function highlightField(
   el: HTMLElement,
-  confidence: FieldConfidence | 'file' | 'ai',
+  confidence: HighlightKind,
   durationMs: number,
 ): void {
   ensureStyles();

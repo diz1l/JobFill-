@@ -1,29 +1,27 @@
 /**
- * Which page controls JobFill is allowed to touch — and which it must never touch.
- *
- * Two rules drive everything in this file:
+ * Which page controls JobFill is allowed to touch — and which it must never
+ * touch. Two rules drive everything here:
  *
  *  1. Never write into, and never surface UI next to, a credential or payment
- *     field (P0-4).  A blue extension button floating next to a password box is
- *     an instant trust killer for the user and a red flag in store review.
- *  2. Never surface UI on pages that plainly are not job applications
- *     (sign-in screens), so the on-page footprint stays at zero there.
+ *     field. A blue extension button floating next to a password box is an
+ *     instant trust killer and a red flag in store review.
+ *  2. Never surface UI on pages that plainly are not job applications (sign-in
+ *     screens), so the on-page footprint stays at zero there.
  *
- * These helpers are deliberately DOM-only and side-effect free so they can be
- * shared by the content script (inline button) and by `fillPage()`.
+ * DOM-only and side-effect free, so the content script's inline button and
+ * `fillPage()` can share them.
  */
 
 export type FillableControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
 /**
- * Input types we are willing to type into.  Allowlist, not denylist: anything
- * the platform adds later (or anything exotic a site invents) is excluded by
- * default instead of silently becoming a fill target.
+ * Input types we are willing to type into. Allowlist, not denylist: anything the
+ * platform adds later, or anything exotic a site invents, is excluded by default
+ * instead of silently becoming a fill target.
  *
- * Notable exclusions: `password` (P0-4), `search` (site search boxes are not
- * application fields), `file` (FR-2.5 — highlight only), `checkbox`/`radio`
- * (FR-2.6 — consent controls are never touched), `hidden`, `submit`, `button`,
- * `reset`, `image`, `range`, `color`.
+ * Notable exclusions: `password`; `search` (site search boxes are not
+ * application fields); `file` (highlighted, never filled); `checkbox` / `radio`
+ * (consent controls are never touched).
  */
 const ALLOWED_INPUT_TYPES = new Set([
   '',

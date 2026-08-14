@@ -1,5 +1,5 @@
 /**
- * Where does generated cover-letter text go? (P1-12)
+ * Where does generated cover-letter text go?
  *
  * Opening the popup takes focus away from the page, so by the time
  * `FILL_COVER_TEXT` arrives `document.activeElement` is useless — and falling
@@ -21,9 +21,17 @@ import { isFillableControl, isInsideAuthForm } from './fillable';
 
 export type CoverTarget = HTMLTextAreaElement | HTMLInputElement;
 
-/** Highlight classes applied to fields the matcher liked, in priority order. */
+/**
+ * Highlight classes applied to fields the matcher liked, in priority order.
+ *
+ * `__jobfill-empty` is included because it is the *exact* first-run case this
+ * flow exists for: the matcher recognised the motivation-letter textarea, had
+ * nothing to put in it, and left it outlined but blank. That field beats
+ * anything else on the page once the WeakRef in `lastRecognized` is gone (SPA
+ * re-render, second visit, popup opened before "Fill Form").
+ */
 const HIGHLIGHTED_TEXTAREAS =
-  'textarea.__jobfill-ai,textarea.__jobfill-high,textarea.__jobfill-medium';
+  'textarea.__jobfill-ai,textarea.__jobfill-high,textarea.__jobfill-medium,textarea.__jobfill-empty';
 
 let lastFocused: WeakRef<CoverTarget> | null = null;
 let lastRecognized: WeakRef<CoverTarget> | null = null;

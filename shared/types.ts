@@ -27,7 +27,7 @@ export interface CoverTemplate {
 }
 
 /**
- * Remote-sync state of a single journal entry (FR-6.3).
+ * Remote-sync state of a single journal entry.
  *
  * - `off`     — no remote backend configured; local copy only. Terminal.
  * - `pending` — queued for (or awaiting) the remote write. Not terminal.
@@ -67,10 +67,10 @@ export interface AppSettings {
   highlightDurationMs: number;
   logBackend: LogBackend;
   /**
-   * FR-5.3 — opt-in LLM classification of the fields the heuristics could not
-   * recognise. **Off by default and fail-closed**: nothing is sent to Groq
-   * unless this is exactly `true` (see `normalizeSettings`). The request carries
-   * field fingerprints only — never profile data (S-3).
+   * Opt-in LLM classification of the fields the heuristics could not recognise.
+   * **Off by default and fail-closed**: nothing is sent unless this is exactly
+   * `true` (see `normalizeSettings`). The request carries field fingerprints
+   * only — never profile data.
    */
   llmFieldClassification: boolean;
 }
@@ -90,18 +90,17 @@ export interface LocalData {
 export type FieldConfidence = 'high' | 'medium' | 'low' | 'none';
 
 /**
- * FR-5.3 — the confidence ceiling for a match that came from the language model.
+ * The confidence ceiling for a match that came from the language model.
  *
  * A model-derived match is *never* `high`. The form is submitted to an employer,
  * and a non-deterministic source may not write into it silently: everything the
  * classifier fills is highlighted amber ("check this") exactly like a heuristic
  * `medium` match.
  *
- * The ceiling is expressed in the type system rather than in the calling code:
+ * The ceiling lives in the type system rather than in calling code:
  * `LlmFieldConfidence` has exactly one inhabitant, so `'high'` is not assignable
- * to it, and {@link LLM_FIELD_CONFIDENCE} is the only value any LLM code path
- * can hand to `highlightField`. There is no confidence *parameter* anywhere on
- * that path to override.
+ * to it, and {@link LLM_FIELD_CONFIDENCE} is the only value any LLM path can
+ * hand to `highlightField`. There is no confidence *parameter* there to override.
  */
 export type LlmFieldConfidence = Extract<FieldConfidence, 'medium'>;
 
@@ -120,10 +119,44 @@ export interface FillSummary {
   total: number;
   high: number;
   medium: number;
+  /**
+   * Controls the heuristics could not name at all. **Not** the same thing as
+   * {@link FillSummary.noData} — see there.
+   */
   unrecognized: number;
   fileInputs: number;
   aiQuestions: number;  // open-ended fields that need AI
+
+  /**
+   * Fields whose type we *did* recognise and had nothing to write into: the
+   * profile entry is blank, or — for the cover letter — no template exists yet.
+   * Separate from `unrecognized` because "we did not understand this field" and
+   * "we understood it and have no data for you" lead to different actions; folded
+   * together, a first-run install looked identical to a page of opaque controls.
+   *
+   * Optional on purpose: a `FillSummary` travels over the message bus, and a
+   * reply from an older build omits it. Read it as `summary.noData ?? 0`.
+   */
+  noData?: number;
+
+  /**
+   * The distinct field types behind {@link FillSummary.noData}, in page order
+   * (`'coverLetter'`, `'phone'`, …). `noData` counts *controls*, this lists
+   * *kinds*, so two blank phone boxes are `noData: 2` / one entry here.
+   *
+   * Turn it into a sentence with `describeMissingData()` from
+   * `shared/filler/missingData` — a DOM-free leaf module the popup can import.
+   */
+  missingFields?: string[];
 }
+
+/**
+ * What `fillPage()` actually returns: every optional counter present. The
+ * optionality on {@link FillSummary} is for summaries that arrived from
+ * somewhere else, and code that just produced one should not `?? 0` its own
+ * output.
+ */
+export type CompleteFillSummary = Required<FillSummary>;
 
 // ─── Job-info extraction ──────────────────────────────────────────────────────
 
@@ -138,7 +171,7 @@ export interface JobInfo {
 export const DEFAULT_SETTINGS: AppSettings = {
   highlightDurationMs: 3000,
   logBackend: 'off',
-  // FR-5.3 is opt-in: a fresh install never talks to Groq while filling.
+  // Opt-in: a fresh install never talks to an LLM while filling.
   llmFieldClassification: false,
 };
 
@@ -198,7 +231,7 @@ export interface NewApplicationInput {
 }
 
 /**
- * Build a journal entry (FR-6.1). Counterpart of {@link createEmptyProfile}.
+ * Build a journal entry. Counterpart of {@link createEmptyProfile}.
  *
  * The background worker — never the UI — calls this, so a malformed message can
  * not put a broken record into `chrome.storage.local`.

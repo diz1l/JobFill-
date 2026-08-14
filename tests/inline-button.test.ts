@@ -11,11 +11,10 @@ import {
 const HOST_TAG = 'jobfill-ui';
 
 /**
- * The UI lives in a **closed** shadow root, so there is deliberately no public
- * way into it — that is the property under test (NFR-4). To assert on the
- * button and the toast we intercept `attachShadow` and keep the root the
- * production code creates, passing its `init` through untouched so the root
- * really is closed for everybody else.
+ * The UI lives in a closed shadow root, so there is deliberately no public way
+ * into it — that is the property under test. To assert on the button and toast
+ * we intercept `attachShadow` and keep the root production creates, passing its
+ * `init` through untouched so the root really is closed for everybody else.
  */
 let shadow: ShadowRoot | null = null;
 
@@ -55,9 +54,9 @@ function anchor(): HTMLInputElement {
 
 /**
  * The press debounce compares `Date.now()` against module-level state that
- * outlives a single test. Fake timers freeze the clock, so without this every
- * test after the first press would be swallowed by the debounce. Each test
- * therefore starts a full minute after the previous one.
+ * outlives a single test, and fake timers freeze the clock — so every test after
+ * the first press would be swallowed by the debounce. Each test therefore starts
+ * a full minute after the previous one.
  */
 let clock = Date.UTC(2026, 0, 1);
 
@@ -86,8 +85,6 @@ afterEach(() => {
   document.querySelectorAll(HOST_TAG).forEach((el) => el.remove());
 });
 
-// ─── NFR-4: page isolation ───────────────────────────────────────────────────
-
 describe('page isolation (NFR-4)', () => {
   it('puts nothing in the page until the UI is actually needed', () => {
     expect(host()).toBeNull();
@@ -113,7 +110,6 @@ describe('page isolation (NFR-4)', () => {
     showToast('done');
     expect(document.head.querySelectorAll('style')).toHaveLength(0);
     expect(document.body.querySelectorAll('style')).toHaveLength(0);
-    // …the CSS lives inside the shadow root instead
     expect(shadow!.querySelector('style')!.textContent).toContain('.btn');
   });
 
@@ -161,8 +157,6 @@ describe('page isolation (NFR-4)', () => {
   });
 });
 
-// ─── The button itself ───────────────────────────────────────────────────────
-
 describe('showInlineButton', () => {
   it('builds an accessible button with an icon and a label', () => {
     showInlineButton(anchor(), () => {});
@@ -201,8 +195,6 @@ describe('showInlineButton', () => {
     expect(second).toHaveBeenCalledTimes(1);
   });
 });
-
-// ─── Pressing it ─────────────────────────────────────────────────────────────
 
 describe('press handling', () => {
   function press(btn: HTMLButtonElement, type: 'pointerdown' | 'click'): Event {
@@ -264,8 +256,6 @@ describe('press handling', () => {
     expect(() => btn.click()).not.toThrow();
   });
 });
-
-// ─── Positioning ─────────────────────────────────────────────────────────────
 
 describe('placement', () => {
   /** Layout is stubbed, so read back the inline styles the code wrote. */
@@ -343,8 +333,6 @@ describe('placement', () => {
   });
 });
 
-// ─── Hiding / unmounting ─────────────────────────────────────────────────────
-
 describe('hideInlineButton', () => {
   it('removes the button and unmounts the host when nothing else is visible', () => {
     showInlineButton(anchor(), () => {});
@@ -374,8 +362,6 @@ describe('hideInlineButton', () => {
     expect(onFill).not.toHaveBeenCalled();
   });
 });
-
-// ─── Toast ───────────────────────────────────────────────────────────────────
 
 describe('showToast', () => {
   it('renders the message with role=status', () => {
@@ -447,8 +433,6 @@ describe('showToast', () => {
   });
 });
 
-// ─── isInlineButtonTarget ────────────────────────────────────────────────────
-
 describe('isInlineButtonTarget', () => {
   it('is false before anything is mounted', () => {
     expect(isInlineButtonTarget(document.body)).toBe(false);
@@ -479,8 +463,6 @@ describe('isInlineButtonTarget', () => {
     expect(isInlineButtonTarget(h)).toBe(false);
   });
 });
-
-// ─── destroyInlineUi ─────────────────────────────────────────────────────────
 
 describe('destroyInlineUi', () => {
   it('removes every trace of the extension from the page', () => {

@@ -12,12 +12,10 @@ import {
 
 /**
  * happy-dom has no layout engine: `getBoundingClientRect()` always returns an
- * all-zero rect, which would make `isVisibleControl` — and therefore
- * `isInlineButtonAnchor` — report *every* control as invisible.  Tests that care
- * about geometry stub the rect explicitly; everything else runs with a default
- * "normal sized control" rect so the visibility check is not the thing under
- * test.  This is stubbed on `Element.prototype`, i.e. exactly the API the
- * production code calls, so no production behaviour is bypassed.
+ * all-zero rect, so `isVisibleControl` — and therefore `isInlineButtonAnchor` —
+ * would call *every* control invisible. Tests that care about geometry stub the
+ * rect explicitly; the rest get a default "normal sized control" rect. Stubbed
+ * on `Element.prototype`, the same API production calls, so nothing is bypassed.
  */
 const VISIBLE_RECT = { x: 50, y: 100, width: 180, height: 32, top: 100, left: 50, right: 230, bottom: 132 };
 
@@ -28,7 +26,6 @@ function stubRect(rect: Partial<typeof VISIBLE_RECT> = {}): void {
   );
 }
 
-/** Mount a fragment and return the first control in it. */
 function mount<T extends Element = HTMLInputElement>(html: string, selector = 'input,textarea,select'): T {
   const host = document.createElement('div');
   host.innerHTML = html;
@@ -46,8 +43,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
-
-// ─── P0-4: credential fields ─────────────────────────────────────────────────
 
 describe('isSensitiveControl — a password box must never be touched (P0-4)', () => {
   it('rejects type="password" written as an attribute', () => {
@@ -129,8 +124,6 @@ describe('isSensitiveControl — a password box must never be touched (P0-4)', (
   }
 
   it('rejects a "show password" toggle regardless of the visible type', () => {
-    // The exact shape shipped by most sites: type flips text↔password, the
-    // name and the label keep saying "password".
     const el = mount<HTMLInputElement>('<input type="password" name="pw" aria-label="Password" />');
     expect(isSensitiveControl(el)).toBe(true);
     el.type = 'text';
@@ -155,8 +148,6 @@ describe('isSensitiveControl — a password box must never be touched (P0-4)', (
     expect(isSensitiveControl(mount('<select name="country"></select>', 'select'))).toBe(false);
   });
 });
-
-// ─── Type allowlist ──────────────────────────────────────────────────────────
 
 describe('isFillableControl', () => {
   const allowed = ['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local'];
@@ -227,8 +218,6 @@ describe('isFillableControl', () => {
   });
 });
 
-// ─── Visibility ──────────────────────────────────────────────────────────────
-
 describe('isVisibleControl', () => {
   it('accepts a normally sized control', () => {
     expect(isVisibleControl(mount('<input name="f" />'))).toBe(true);
@@ -267,9 +256,6 @@ describe('isVisibleControl', () => {
   });
 });
 
-// ─── Auth-form heuristic ─────────────────────────────────────────────────────
-
-/** `n` plain text inputs, as markup. */
 function textInputs(n: number): string {
   return Array.from({ length: n }, (_, i) => `<input type="text" name="f${i}" />`).join('');
 }
@@ -317,7 +303,6 @@ describe('isInsideAuthForm — the ≤5 control threshold', () => {
     expect(isInsideAuthForm(el)).toBe(true);
   });
 
-  // ── Both sides of the calibrated boundary ──
   it('exactly 5 user-facing controls with a password is still a login form', () => {
     const el = mount(`<form><input type="password" name="pw" />${textInputs(4)}</form>`);
     expect(el.closest('form')!.querySelectorAll('input,textarea,select')).toHaveLength(5);
@@ -404,8 +389,6 @@ describe('looksLikeAuthPage — SPA login screens without a <form>', () => {
   });
 });
 
-// ─── The inline button anchor gate ───────────────────────────────────────────
-
 describe('isInlineButtonAnchor — P0-4 end to end', () => {
   it('accepts a plain visible application field', () => {
     expect(isInlineButtonAnchor(mount('<form><input type="text" name="first_name" />' + textInputs(6) + '</form>'))).toBe(
@@ -440,7 +423,6 @@ describe('isInlineButtonAnchor — P0-4 end to end', () => {
     expect(isInlineButtonAnchor(mount('<input type="text" name="first_name" />'))).toBe(false);
   });
 
-  // ── The regression this gate exists for ──
   it('never appears next to input[type=password]', () => {
     expect(isInlineButtonAnchor(mount('<input type="password" name="pw" />'))).toBe(false);
   });
@@ -483,8 +465,6 @@ describe('isInlineButtonAnchor — P0-4 end to end', () => {
     expect(isInlineButtonAnchor(el)).toBe(true);
   });
 });
-
-// ─── Page probes ─────────────────────────────────────────────────────────────
 
 describe('hasFillableControls / countFillableControls', () => {
   it('reports nothing on an empty page', () => {

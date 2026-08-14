@@ -1,9 +1,7 @@
 /**
- * Strategy for filling native <select> elements.
- * Chooses the option whose text or value best matches the profile datum
- * (normalized, diacritics-folded, case-insensitive).
- *
- * Returns true if an option was selected, false if none matched.
+ * Fill a native `<select>` by choosing the option whose text or value best
+ * matches the profile datum, compared normalized, diacritics-folded and
+ * case-insensitively. `false` when nothing matched and nothing was selected.
  */
 
 const SIMILARITY_THRESHOLD = 0.5;

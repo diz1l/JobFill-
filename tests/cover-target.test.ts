@@ -23,8 +23,6 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-// ─── P1-12: the regression this module exists for ────────────────────────────
-
 describe('resolveCoverTarget — never guesses (P1-12)', () => {
   it('returns null on a page with no textareas at all', () => {
     render('<main><input id="q" name="first_name" /></main>');
@@ -66,8 +64,6 @@ describe('resolveCoverTarget — never guesses (P1-12)', () => {
     expect(resolveCoverTarget()).toBeNull();
   });
 });
-
-// ─── 1. Last focused field ───────────────────────────────────────────────────
 
 describe('rememberFocusedField', () => {
   it('is the strongest signal — it wins over everything else', () => {
@@ -122,8 +118,6 @@ describe('rememberFocusedField', () => {
   });
 });
 
-// ─── 2. Field recognised during the last fill ────────────────────────────────
-
 describe('rememberRecognizedCoverField', () => {
   it('wins over the highlight scan and the matcher', () => {
     render(
@@ -154,16 +148,33 @@ describe('rememberRecognizedCoverField', () => {
   });
 });
 
-// ─── 3. Still-highlighted textareas from the last fill ───────────────────────
-
 describe('highlighted-textarea fallback', () => {
-  const classes = ['__jobfill-ai', '__jobfill-high', '__jobfill-medium'];
+  const classes = ['__jobfill-ai', '__jobfill-high', '__jobfill-medium', '__jobfill-empty'];
   for (const cls of classes) {
     it(`picks up a textarea still marked ${cls}`, () => {
       render(`<textarea id="hit" class="${cls}" name="x9f2"></textarea>`);
       expect(resolveCoverTarget()).toBe(byId('hit'));
     });
   }
+
+  /**
+   * First run, name the matcher cannot read: `fillPage()` recognised the letter
+   * field, had no template for it, and left it outlined `empty`. That outline is
+   * the only evidence of the match once the WeakRef hints are gone — and this is
+   * exactly where the popup's "Generate motivation → Insert" must land.
+   */
+  it('picks up an opaque letter textarea left empty by a template-less fill', () => {
+    render('<textarea id="dopis" class="__jobfill-empty" data-automation-id="a91f"></textarea>');
+    expect(resolveCoverTarget()).toBe(byId('dopis'));
+  });
+
+  it('still ignores a textarea marked empty inside a login form', () => {
+    render(
+      '<form><input type="password" name="pw" />' +
+        '<textarea id="hit" class="__jobfill-empty" name="x9f2"></textarea></form>',
+    );
+    expect(resolveCoverTarget()).toBeNull();
+  });
 
   it('ignores a textarea marked as unrecognised', () => {
     render('<textarea id="miss" class="__jobfill-none" name="x9f2"></textarea>');
@@ -184,10 +195,9 @@ describe('highlighted-textarea fallback', () => {
   });
 
   /**
-   * The selector is written `ai,high,medium` as if that were a priority order,
-   * but `querySelectorAll` always yields **document order** regardless of the
-   * order of the selector list. Pinning the real behaviour here so a future
-   * change to it is a deliberate one.
+   * The selector reads `ai,high,medium` as if that were a priority order, but
+   * `querySelectorAll` always yields document order regardless of selector
+   * order. Pinned so a change to it has to be a deliberate one.
    */
   it('takes the first highlighted textarea in document order, not in selector order', () => {
     render(
@@ -205,8 +215,6 @@ describe('highlighted-textarea fallback', () => {
     expect(resolveCoverTarget()).toBe(byId('ai'));
   });
 });
-
-// ─── 4. Ask the matcher ──────────────────────────────────────────────────────
 
 describe('matcher fallback (popup used before "Fill Form")', () => {
   it('finds the cover-letter textarea by its name', () => {
@@ -273,8 +281,6 @@ describe('matcher fallback (popup used before "Fill Form")', () => {
     expect(resolveCoverTarget(doc)).toBe(doc.getElementById('cl'));
   });
 });
-
-// ─── Forgetting ──────────────────────────────────────────────────────────────
 
 describe('forgetCoverTargets', () => {
   it('drops both hints', () => {
