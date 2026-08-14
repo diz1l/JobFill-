@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "JobFill",
+    "description": "Extension name shown in the browser UI and store listing."
+  },
+  "extDescription": {
+    "message": "Autofill job application forms in one click.",
+    "description": "Short extension description shown in the browser UI and store listing."
+  }
+}

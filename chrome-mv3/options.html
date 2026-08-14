@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<!-- `class="page"` pins html/body/#root to 100% height with overflow hidden, so
+     <main> stays the only scroll container on the page (§5.1). -->
+<html lang="en" class="page">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
+    <!-- §5.9 — WXT builds `options_ui` from this entrypoint and ignores
+         `manifest.options_ui` in wxt.config.ts, so the flag has to be declared
+         here. With it the settings always open as a full browser tab, whether
+         they are reached from the popup or from chrome://extensions. -->
+    <meta name="manifest.open_in_tab" content="true">
+    <title>JobFill — Settings</title>
+    <script type="module" crossorigin src="/chunks/options-CbTWcJBQ.js"></script>
+    <link rel="modulepreload" crossorigin href="/chunks/globals-BYRvkfoA.js">
+    <link rel="stylesheet" crossorigin href="/assets/globals-bPnEr6EG.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
