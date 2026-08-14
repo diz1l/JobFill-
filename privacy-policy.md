@@ -1,19 +1,33 @@
 # JobFill — Privacy Policy
 
-Last updated: July 2026
+Last updated: August 2026
 
 JobFill does not collect, transmit, or sell any user data.
 
 ## What data JobFill stores
-JobFill stores the applicant profiles, cover letter templates, application log, and settings that you create. All of this data is stored locally in your browser using Chrome's storage API. It never leaves your device except in the cases you explicitly configure (see below).
+JobFill stores the applicant profiles, cover letter templates, application log, and settings that you create. All of this data is stored locally in your browser using the browser's extension storage API. Profiles, templates and settings use synced storage, so your browser may replicate them to your other signed-in browsers; API keys and the application log use local storage and never leave the device. None of it is ever sent to us — we operate no server — and it leaves your browser only in the cases you explicitly configure (see below).
 
 ## Network requests
-JobFill has no backend server and sends no telemetry. Network requests occur only on your explicit action:
-- Groq API (api.groq.com) — only if you enable AI generation and provide your own API key;
-- Notion API (api.notion.com) — only if you enable application logging to your own Notion workspace;
-- Google Apps Script (script.google.com) — only if you enable application logging to your own Google Sheet.
+JobFill has no backend server and sends no telemetry. Network requests occur only on your explicit action, and only to these destinations:
+- **Groq API** (`api.groq.com`) — only if you enable AI generation and provide your own API key;
+- **Notion API** (`api.notion.com`) — only if you enable application logging to your own Notion workspace;
+- **Google Apps Script** (`script.google.com`, and `script.googleusercontent.com`) — only if you enable application logging to your own Google Sheet. Both hosts belong to the same request: a deployed Apps Script Web App always redirects from `script.google.com` to `script.googleusercontent.com`, so the extension must be allowed to follow that redirect. No separate data is sent to the second host.
 
 Your API keys are stored locally on your device and are never synced or shared.
+
+If a logging request fails, the entry is kept in a local retry queue in your browser and retried once. The queue never leaves your device.
+
+## What JobFill reads from the pages you visit
+JobFill runs on `http://` and `https://` pages in order to find and fill form fields. It reads the form fields of the current page and the job posting's public metadata (company, position, description) so it can fill and, if you ask it to, generate a cover letter. This happens entirely inside your browser. Page content is never sent anywhere, with three exceptions you control, all of them using your own API key:
+- pressing "Generate motivation" sends an excerpt of the job description together with your profile summary to Groq;
+- asking JobFill to answer an open question sends the text of that question, the job description and your profile summary to Groq;
+- if you switch on "Identify unrecognized fields with AI" in Settings — off by default — then each time JobFill fills a form it sends a description of the fields it could **not** recognise to Groq, so it can ask what they are. What is sent about each such field is limited to how that field identifies itself: its `name` and `id` attributes, its visible label, its placeholder text, the heading of the section it sits in, and any help text attached to it. At most 40 fields per form.
+
+  This third case is worth being precise about, because it is the only one that happens as part of an ordinary fill rather than on a button you press. Even so: **your profile data is never part of it, and neither is anything you have typed into the page.** The current contents of the form fields are not sent — not of the unrecognised fields, and not of any other field. Neither is the body text of the page. JobFill sends the question "what kind of field is this?" and nothing more; the answer is used to fill the field from your own profile, locally. Turning the setting off, or leaving it off, means nothing is sent while filling at all.
+
+Nothing else from the page is transmitted.
+
+JobFill never reads or fills password fields, never touches consent or GDPR checkboxes, and never submits a form for you. It does not run on well-known mail, identity and payment sites, or on URLs that look like sign-in or checkout pages.
 
 ## Data controller
 Since JobFill has no server and collects nothing, you are the sole owner and controller of your data. Uninstalling the extension removes all locally stored data.
