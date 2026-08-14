@@ -1,13 +1,11 @@
 import type { JobInfo } from '../types';
 
-/**
- * Last-resort extraction from the page's <h1> and <title>.
- */
+/** Last-resort extraction from the page's <h1> and <title>. */
 export function extractFromHeadings(doc: Document = document): Partial<JobInfo> {
   const h1 = doc.querySelector('h1')?.textContent?.trim();
   const titleRaw = doc.title?.trim();
 
-  // Prefer H1 as the job title (most specific visible heading)
+  // H1 beats <title>: it is the most specific visible heading on the page.
   const position = h1 || undefined;
 
   // Extract company from <title>: "Job Title - Company Name | Site"

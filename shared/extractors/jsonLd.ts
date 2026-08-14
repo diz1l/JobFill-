@@ -1,9 +1,6 @@
 import type { JobInfo } from '../types';
 
-/**
- * Extract job info from JSON-LD JobPosting structured data.
- * Priority: most reliable source — present on major job boards.
- */
+/** Most reliable source: JSON-LD `JobPosting`, present on the major job boards. */
 export function extractFromJsonLd(doc: Document = document): Partial<JobInfo> {
   const scripts = doc.querySelectorAll<HTMLScriptElement>('script[type="application/ld+json"]');
 
@@ -39,7 +36,6 @@ function findJobPosting(node: any): any | null {
     return node;
   }
 
-  // Walk @graph
   if (Array.isArray(node['@graph'])) {
     for (const item of node['@graph']) {
       const found = findJobPosting(item);

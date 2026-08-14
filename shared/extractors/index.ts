@@ -3,10 +3,7 @@ import { extractFromJsonLd } from './jsonLd';
 import { extractFromOpenGraph } from './openGraph';
 import { extractFromHeadings } from './headingHeuristics';
 
-/**
- * Extract job info with fallback chain:
- *   JSON-LD (most reliable) → Open Graph → heading heuristics
- */
+/** Fallback chain: JSON-LD (most reliable) → Open Graph → heading heuristics. */
 export function extractJobInfo(doc: Document = document): JobInfo {
   const jsonLd = extractFromJsonLd(doc);
   const og = extractFromOpenGraph(doc);

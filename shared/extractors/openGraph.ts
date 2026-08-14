@@ -1,9 +1,6 @@
 import type { JobInfo } from '../types';
 
-/**
- * Extract job info from Open Graph meta tags.
- * Used as a fallback when JSON-LD is absent.
- */
+/** Open Graph meta tags — the fallback when JSON-LD is absent. */
 export function extractFromOpenGraph(doc: Document = document): Partial<JobInfo> {
   const get = (property: string): string | undefined => {
     const el = doc.querySelector<HTMLMetaElement>(`meta[property="${property}"]`);
