@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import { IconChevronDown } from './Icons';
 
 /**
@@ -12,7 +12,12 @@ import { IconChevronDown } from './Icons';
 
 interface BaseProps {
   label: string;
-  hint?: string;
+  /**
+   * `ReactNode`, not `string`: a hint whose whole job is to name a page — "get a
+   * key at console.groq.com/keys" — is worth making clickable, and a URL the
+   * user has to retype by hand is a hint that does not finish its sentence.
+   */
+  hint?: ReactNode;
   /** Stretch to the container instead of the field grid's natural column. */
   className?: string;
 }
@@ -155,7 +160,7 @@ export function TextArea({
       <label className="label" htmlFor={id}>
         {label}
       </label>
-      {/* §5.2 — a 70ch measure instead of a 1076px, ~180-character line. */}
+      {/* a 70ch measure instead of a 1076px, ~180-character line. */}
       <textarea
         id={id}
         value={value}
@@ -197,7 +202,7 @@ export function Select<T extends string>({
       <label className={hideLabel ? 'sr-only' : 'label'} htmlFor={id}>
         {label}
       </label>
-      {/* §5.10 — the native chevron does not follow the theme, so the control
+      {/* the native chevron does not follow the theme, so the control
           is `appearance-none` with our own icon layered on top. */}
       <div className="relative">
         <select

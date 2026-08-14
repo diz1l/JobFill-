@@ -8,13 +8,20 @@ import {
 import type { SyncStorageUsage } from '../../shared/storage/sync';
 import {
   getGroqApiKey, setGroqApiKey, getGroqModel, setGroqModel,
+  getLlmProvider, getCustomBaseUrl, setLlmProvider,
   getNotionCredentials, setNotionCredentials, getSheetsEndpoint, setSheetsEndpoint,
 } from '../../shared/storage/local';
 import { validateSheetsEndpoint } from '../../shared/api/sheets';
+import {
+  keyProviderMismatch, normalizeBaseUrl, originPattern, providerOf, resolveBaseUrl,
+  validateBaseUrl, PROVIDER_IDS, PROVIDERS, type ProviderId,
+} from '../../shared/api/provider';
 import { Field, TextArea, Select, Toggle } from '../ui/Field';
 import { EmptyState, ErrorBanner, SavedFlag, Skeleton } from '../ui/Feedback';
 import { ConfirmDialog } from '../ui/Dialog';
 import { NotionCheck } from '../ui/NotionCheck';
+import { GroqCheck } from '../ui/GroqCheck';
+import { hasHostAccess, requestHostAccess } from '../ui/hostAccess';
 import {
   IconBolt, IconUser, IconFileText, IconKey, IconPlus, IconTrash,
   IconDownload, IconUpload, IconAlert,
@@ -36,7 +43,7 @@ const clampSidebar = (n: number) => Math.max(SIDEBAR.min, Math.min(SIDEBAR.max, 
 export default function App() {
   const [tab, setTab] = useState<Tab>('profiles');
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    // §5.10 — the width survives reloads. Page-local storage, not chrome.storage:
+    // the width survives reloads. Page-local storage, not chrome.storage:
     // it is a per-display preference and must not burn the sync quota.
     const stored = Number(window.localStorage.getItem(SIDEBAR.key));
     return Number.isFinite(stored) && stored > 0 ? clampSidebar(stored) : SIDEBAR.default;
@@ -93,7 +100,7 @@ export default function App() {
   }, []);
 
   return (
-    /* §5.1 — h-screen + overflow-hidden. The page itself must never scroll:
+    /* h-screen + overflow-hidden. The page itself must never scroll:
        <main> below is the only scroll container, which keeps the header and
        the sidebar permanently on screen. */
     <div className="flex h-screen flex-col overflow-hidden bg-surface text-fg">
@@ -104,7 +111,7 @@ export default function App() {
           <span className="text-base text-fg-muted">Settings</span>
         </div>
 
-        {/* §5.9 — below `md` (the ~600px options dialog) the sidebar collapses
+        {/* below `md` (the ~600px options dialog) the sidebar collapses
             into a horizontal tab strip so the content keeps its full width. */}
         <nav aria-label="Settings sections" className="flex gap-1 overflow-x-auto px-2 pb-2 md:hidden">
           {NAV.map(({ id, label, Icon }) => (
@@ -144,7 +151,7 @@ export default function App() {
           </nav>
         </aside>
 
-        {/* §5.10 — a real separator: reachable by Tab, resizable with the arrow
+        {/* a real separator: reachable by Tab, resizable with the arrow
             keys, resettable with Enter, and pointer-driven on touch screens. */}
         <div
           role="separator"
@@ -210,7 +217,7 @@ function FormSkeleton() {
   );
 }
 
-/** FR-1.2 — warn before chrome.storage.sync fills up. */
+/** Warn before chrome.storage.sync fills up. */
 function QuotaWarning({ usage }: { usage: SyncStorageUsage | null }) {
   if (!usage?.warn) return null;
   return (
@@ -294,7 +301,7 @@ function ProfilesTab() {
       const warn = report.warnings.length ? ` · ${report.warnings.length} field(s) repaired` : '';
       setNotice(`Imported ${report.profiles} profile(s) and ${report.coverTemplates} template(s)${warn}.`);
     } catch (err) {
-      // §5.10 — inline banner instead of a system alert() dialog.
+      // inline banner instead of a system alert() dialog.
       setError(`Import failed: ${(err as Error).message}`);
     }
   }
@@ -407,7 +414,7 @@ function ProfileForm({
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); void onSave(form); }} className="flex flex-col gap-6">
-      {/* §5.2 — .field-grid caps every control at one `minmax(280px, 1fr)`
+      {/* .field-grid caps every control at one `minmax(280px, 1fr)`
           column, so nothing stretches to the full window width any more. */}
       <div className="field-grid">
         <Field label="Profile label" value={form.label} onChange={f('label')} required />
@@ -560,7 +567,7 @@ function TemplatesTab() {
               </div>
             </form>
           ) : (
-            /* §5.10 — Templates used to render nothing at all when empty. */
+            /* Templates used to render nothing at all when empty. */
             <EmptyState
               icon={<IconFileText className="size-8" />}
               title="No templates yet"
@@ -596,9 +603,33 @@ const LOG_BACKENDS: { value: AppSettings['logBackend']; label: string }[] = [
   { value: 'sheets', label: 'Google Sheets' },
 ];
 
+/**
+ * The Groq credentials as they exist in `chrome.storage.local` — i.e. the ones
+ * JobFill actually fills forms with.
+ *
+ * Kept next to the form state on purpose. A settings form that shows a pasted
+ * key indistinguishably from a stored one is a trap: the first live run ended
+ * with "I pasted the API key but nothing works", and the field looked identical
+ * in both cases. Everything that can say "…but not saved" is derived from this.
+ */
+interface SavedGroq {
+  key: string;
+  model: string;
+}
+
+/** The Provider dropdown, in the order `PROVIDER_IDS` declares. */
+const PROVIDER_OPTIONS: { value: ProviderId; label: string }[] = PROVIDER_IDS.map((id) => ({
+  value: id,
+  label: PROVIDERS[id].label,
+}));
+
 function ApiTab() {
   const [groqKey, setGroqKeyState] = useState('');
-  const [groqModel, setGroqModelState] = useState('llama-3.3-70b-versatile');
+  const [groqModel, setGroqModelState] = useState('');
+  const [provider, setProvider] = useState<ProviderId>('groq');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [hostGranted, setHostGranted] = useState(true);
+  const [savedGroq, setSavedGroq] = useState<SavedGroq>({ key: '', model: '' });
   const [notionToken, setNotionToken] = useState('');
   const [notionDb, setNotionDb] = useState('');
   const [sheetsUrl, setSheetsUrl] = useState('');
@@ -610,27 +641,102 @@ function ApiTab() {
   /** Set by a rejected save, so an untouched empty field is not scolded on load. */
   const [sheetsBlockedSave, setSheetsBlockedSave] = useState(false);
 
-  // P1-13 — `validateSheetsEndpoint` catches http://, a non-Apps-Script host and
-  // the /dev URL (which only works for its author) *before* the value is stored.
+  /**
+   * Fingerprint of everything this form writes. Comparing it with the value
+   * taken at load / after save is what turns "the button did nothing visible"
+   * into an explicit "unsaved changes" — see {@link SavedGroq}.
+   */
+  const snapshot = JSON.stringify([
+    groqKey.trim(), groqModel.trim(), provider, normalizeBaseUrl(customBaseUrl),
+    notionToken.trim(), notionDb.trim(),
+    sheetsUrl.trim(), logBackend, llmClassification,
+  ]);
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+  const dirty = savedSnapshot !== null && savedSnapshot !== snapshot;
+
+  const providerInfo = providerOf(provider);
+  const baseUrl = resolveBaseUrl(providerInfo, customBaseUrl);
+  const baseUrlProblem = provider === 'custom' ? validateBaseUrl(customBaseUrl) : undefined;
+  const showBaseUrlProblem = !!baseUrlProblem && customBaseUrl.trim() !== '';
+  /**
+   * The one check that pays for this whole section: a key's prefix says which
+   * company issued it, so a mismatch is knowable at paste time. The alternative
+   * — and what actually happened — is a valid key, a confident "invalid key"
+   * from the wrong provider, and an hour spent re-copying it.
+   */
+  const keyMismatch = keyProviderMismatch(provider, groqKey);
+
+  // `validateSheetsEndpoint` catches http://, a non-Apps-Script host and the
+  // /dev URL (which only works for its author) *before* the value is stored.
   // Previously the first sign of a wrong URL was a failed application log.
   const sheetsProblem = validateSheetsEndpoint(sheetsUrl.trim());
   const showSheetsProblem =
     logBackend === 'sheets' && !!sheetsProblem && (sheetsUrl.trim() !== '' || sheetsBlockedSave);
 
   useEffect(() => {
-    Promise.all([getGroqApiKey(), getGroqModel(), getNotionCredentials(), getSheetsEndpoint(), getSettings()])
-      .then(([key, model, notion, sheets, settings]) => {
+    Promise.all([
+      getGroqApiKey(), getGroqModel(), getLlmProvider(), getCustomBaseUrl(),
+      getNotionCredentials(), getSheetsEndpoint(), getSettings(),
+    ])
+      .then(([key, model, storedProvider, storedBaseUrl, notion, sheets, settings]) => {
         if (key) setGroqKeyState(key);
         setGroqModelState(model);
+        setProvider(storedProvider);
+        setCustomBaseUrl(storedBaseUrl);
+        setSavedGroq({ key: key ?? '', model });
         if (notion.notionToken) setNotionToken(notion.notionToken);
         if (notion.notionDatabaseId) setNotionDb(notion.notionDatabaseId);
         if (sheets) setSheetsUrl(sheets);
         setLogBackend(settings.logBackend);
         setLlmClassification(settings.llmFieldClassification);
+        setSavedSnapshot(
+          JSON.stringify([
+            (key ?? '').trim(), model.trim(), storedProvider, normalizeBaseUrl(storedBaseUrl),
+            (notion.notionToken ?? '').trim(),
+            (notion.notionDatabaseId ?? '').trim(), (sheets ?? '').trim(),
+            settings.logBackend, settings.llmFieldClassification,
+          ]),
+        );
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
+
+  // A provider whose origin is not in `host_permissions` cannot be reached until
+  // the user grants it. Checked on every change so the button appears next to the
+  // choice that needs it, and disappears the moment it is answered.
+  useEffect(() => {
+    let live = true;
+    void hasHostAccess(originPattern(baseUrl)).then((ok) => {
+      if (live) setHostGranted(ok);
+    });
+    return () => {
+      live = false;
+    };
+  }, [baseUrl]);
+
+  /**
+   * Ask for the origin from the click itself — Chrome refuses
+   * `permissions.request()` without a user gesture, and an `await` before it
+   * spends the one we have.
+   */
+  async function grantHostAccess() {
+    setHostGranted(await requestHostAccess(originPattern(baseUrl)));
+  }
+
+  /**
+   * Switching provider clears the model id, always.
+   *
+   * Model ids do not transfer: `llama-3.3-70b-versatile` is meaningless to
+   * OpenRouter and `meta-llama/llama-3.3-70b-instruct` is meaningless to Groq, so
+   * a field carried across produces a 404 that reads exactly like a broken key.
+   * Empty means "the provider's default", which is always a working id, and the
+   * placeholder shows which one that is.
+   */
+  function switchProvider(next: ProviderId) {
+    setProvider(next);
+    setGroqModelState('');
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -644,23 +750,46 @@ function ApiTab() {
     }
     setSheetsBlockedSave(false);
 
+    // Same rule for the LLM endpoint: an unusable base URL is refused here
+    // rather than stored and discovered on the next fill. `validateBaseUrl`
+    // rejects http:// and anything that is not a URL, so nothing arbitrary
+    // reaches `fetch`.
+    if (provider === 'custom' && validateBaseUrl(customBaseUrl)) {
+      setError('Fix the API URL before saving — see the message under the field.');
+      return;
+    }
+
     // Credentials are trimmed on the way in: a pasted token or URL almost always
     // carries a space, and it must not be the difference between a passing
     // "Check connection" and a failing log.
     const endpoint = sheetsUrl.trim();
     const token = notionToken.trim();
     const database = notionDb.trim();
+    const key = groqKey.trim();
+    const model = groqModel.trim();
+    const llmUrl = normalizeBaseUrl(customBaseUrl);
     setSheetsUrl(endpoint); setNotionToken(token); setNotionDb(database);
+    setGroqKeyState(key); setGroqModelState(model); setCustomBaseUrl(llmUrl);
+
+    const classification = llmClassification && key !== '';
 
     try {
       await Promise.all([
-        setGroqApiKey(groqKey.trim()), setGroqModel(groqModel.trim()),
+        setGroqApiKey(key), setGroqModel(model),
+        setLlmProvider(provider, llmUrl),
         setNotionCredentials(token, database),
         setSheetsEndpoint(endpoint),
         // Force the flag off when the key is gone: leaving it true would arm a
         // feature the user cannot see the switch for.
-        saveSettings({ logBackend, llmFieldClassification: llmClassification && groqKey.trim() !== '' }),
+        saveSettings({ logBackend, llmFieldClassification: classification }),
       ]);
+      // Only now are the stored values what the form shows, so the "unsaved"
+      // notices are cleared from the same place that made them true.
+      setSavedGroq({ key, model });
+      setSavedSnapshot(
+        JSON.stringify([key, model, provider, llmUrl, token, database, endpoint, logBackend, classification]),
+      );
+      setLlmClassification(classification);
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       setError(`Could not save: ${(err as Error).message}`);
@@ -670,39 +799,119 @@ function ApiTab() {
   if (loading) return <FormSkeleton />;
 
   return (
-    /* §5.3 — no `max-w-lg` here any more: all three tabs share the same
+    /* no `max-w-lg` here any more: all three tabs share the same
        `.content-column`, so switching tabs no longer resizes the layout. */
     <form className="flex flex-col gap-8" onSubmit={handleSave}>
       <section className="flex flex-col gap-4">
-        <SectionHeader title="AI — Groq" description="Powers motivation letters and open-question answering." />
+        <SectionHeader
+          title="AI provider"
+          description="Powers motivation letters, open-question answering and field recognition. Any OpenAI-compatible service will do."
+        />
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
         <div className="field-grid">
+          <Select
+            label="Provider"
+            value={provider}
+            onChange={switchProvider}
+            options={PROVIDER_OPTIONS}
+            hint={
+              providerInfo.keysUrl ? (
+                <>
+                  Get a key at{' '}
+                  <a
+                    className="text-accent underline underline-offset-2"
+                    href={providerInfo.keysUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {providerInfo.keysUrl.replace(/^https:\/\//, '')}
+                  </a>
+                </>
+              ) : (
+                'Any endpoint that serves POST /chat/completions the way OpenAI does.'
+              )
+            }
+          />
           <Field
-            label="API key"
+            label={provider === 'custom' ? 'API key' : `${providerInfo.label} API key`}
             type="password"
             value={groqKey}
             onChange={setGroqKeyState}
-            placeholder="gsk_…"
+            placeholder={provider === 'groq' ? 'gsk_…' : provider === 'openrouter' ? 'sk-or-v1-…' : 'sk-…'}
             hint="Stored in this browser only — never synced to other devices."
           />
+        </div>
+        {/* The sentence the first live run needed and did not get. A prefix says
+            which company issued a key, so this is answerable at paste time —
+            before a round-trip that can only ever say "invalid key". */}
+        {keyMismatch && (
+          <p className="flex items-start gap-1.5 text-sm text-warning" role="alert">
+            <IconAlert className="mt-0.5 size-4 shrink-0" />
+            <span>{keyMismatch}</span>
+          </p>
+        )}
+        {provider === 'custom' && (
+          <div className="field-grid">
+            <div>
+              <Field
+                label="API base URL"
+                value={customBaseUrl}
+                onChange={setCustomBaseUrl}
+                placeholder="https://example.com/v1"
+                hint="JobFill appends /chat/completions and /models. Must be https."
+              />
+              {showBaseUrlProblem && (
+                <p className="mt-1.5 flex items-start gap-1.5 text-sm text-danger" role="alert">
+                  <IconAlert className="mt-0.5 size-4 shrink-0" />
+                  <span>{baseUrlProblem}</span>
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+        <div className="field-grid">
           <Field
             label="Model"
             value={groqModel}
             onChange={setGroqModelState}
-            placeholder="llama-3.3-70b-versatile"
-            hint="Any chat model available on your Groq account."
+            placeholder={providerInfo.defaultModel || 'model id'}
+            hint={providerInfo.modelHint}
           />
         </div>
-        {/* FR-5.3 — opt-in, off by default. Gated on a key being present: without
-            one the pass is a no-op, and a switch that does nothing is worse than
-            a disabled switch that says why. */}
+        {/* Hosts other than Groq's are optional permissions, requested from this
+            click so the browser has the user gesture it insists on. */}
+        {!hostGranted && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <button type="button" className="btn btn-secondary" onClick={() => void grantHostAccess()}>
+              Allow access to {originPattern(baseUrl) ?? 'this endpoint'}
+            </button>
+            <p className="text-sm text-fg-subtle">
+              JobFill asks for one host at a time, so choosing {providerInfo.label} does not widen
+              anything for anyone who does not.
+            </p>
+          </div>
+        )}
+        {/* The provider counterpart of NotionCheck: the key, the model and
+            whether either of them is actually saved, answered separately. */}
+        <GroqCheck
+          apiKey={groqKey}
+          model={groqModel}
+          provider={provider}
+          baseUrl={customBaseUrl}
+          savedApiKey={savedGroq.key}
+          savedModel={savedGroq.model}
+          onPickModel={setGroqModelState}
+        />
+        {/* Opt-in, off by default. Gated on a key being present: without one the
+            pass is a no-op, and a switch that does nothing is worse than a
+            disabled switch that says why. */}
         <Toggle
           label="Identify unrecognized fields with AI"
           checked={llmClassification}
           disabled={groqKey.trim() === ''}
-          disabledReason="Add a Groq API key above to enable this."
+          disabledReason="Add an API key above to enable this."
           onChange={setLlmClassification}
-          description="When JobFill cannot recognise a field, it sends that field's attributes — name, label, placeholder — to Groq. Never your profile data and never the page content. Fields matched this way are filled and highlighted amber for review."
+          description={`When JobFill cannot recognise a field, it sends that field's attributes — name, label, placeholder — to ${providerInfo.inSentence}, together with the names of your profile entries. Never their values, and never the page content. The answer is a recipe such as “first name + last name”, so one box can take two entries at once; JobFill assembles the text here in the browser. It is not asked about consent boxes, employer or reference questions, money, or dates of birth, and anything it does fill is highlighted amber for you to check.`}
         />
       </section>
 
@@ -731,7 +940,7 @@ function ApiTab() {
                 hint="Share the database with your integration, then copy the ID from its URL."
               />
             </div>
-            {/* P1-13 — the schema reader in shared/api/notion.ts, reachable at last. */}
+            {/* The schema reader in shared/api/notion.ts, reachable at last. */}
             <NotionCheck token={notionToken} databaseId={notionDb} />
           </>
         )}
@@ -759,6 +968,16 @@ function ApiTab() {
       <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
         <button type="submit" className="btn btn-primary">Save settings</button>
         <SavedFlag show={saved} />
+        {/* Nothing on this page used to distinguish "typed" from "stored", so a
+            pasted key that was never saved looked exactly like a working one.
+            Hidden while the acknowledgement is on screen, so the two never
+            contradict each other. */}
+        {dirty && !saved && (
+          <p className="flex items-center gap-1.5 text-base text-warning" role="status">
+            <IconAlert className="size-4" />
+            Unsaved changes — JobFill still uses the previously saved values.
+          </p>
+        )}
         {/* Without this, pressing Save with an already-visible field error looks
             like a dead button: the inline message does not change, so nothing
             is announced and nothing moves. */}

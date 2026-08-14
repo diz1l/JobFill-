@@ -1,5 +1,5 @@
 /**
- * Frame-addressed tab messaging — the caller half of PROJECT_AUDIT §3 P0-5.
+ * Frame-addressed tab messaging — the caller half of the fill protocol.
  *
  * `chrome.tabs.sendMessage(tabId, msg)` without a `frameId` reaches *every*
  * frame of the tab, but the sender only ever sees the **first** `sendResponse`.
@@ -7,33 +7,27 @@
  * iframe while the top frame answers "nothing here" first, so the popup reported
  * "0 filled" for a form it had just filled.
  *
- * The first fix enumerated the frames with `webNavigation.getAllFrames` and
- * asked each one separately. It worked, but `webNavigation` makes Chrome show
- * "Read your browsing history" at install time — a disproportionate price for an
- * autofiller, and a direct contradiction of NFR-2.
- *
- * This module inverts the direction instead, which needs no permission at all:
+ * The first fix enumerated frames with `webNavigation.getAllFrames`. It worked,
+ * but `webNavigation` makes Chrome show "Read your browsing history" at install
+ * time — a disproportionate price for an autofiller. This module inverts the
+ * direction instead, which needs no permission at all:
  *
  *   1. one **broadcast** `tabs.sendMessage` carrying a unique `requestId`;
- *   2. every frame that has something to say does the work and answers with
+ *   2. every frame with something to say answers via
  *      `chrome.runtime.sendMessage` — *not* `sendResponse`, so no answer can
  *      shadow another;
- *   3. this side listens on `chrome.runtime.onMessage`, keeps the replies whose
- *      `requestId` matches, and aggregates when the collection window closes.
+ *   3. this side keeps the replies whose `requestId` matches and aggregates when
+ *      the collection window closes.
  *
- * The reply's own frame arrives in `sender.frameId`, so a frame never has to
- * know (or claim) its id, and the caller can address follow-ups (`FILL_ANSWERS`,
- * `FILL_COVER_TEXT`) straight back at it. This is strictly more information than
- * the old path had: *all* frames report now, not just the fastest one.
+ * The reply's frame arrives in `sender.frameId`, so a frame never has to know or
+ * claim its id, and follow-ups (`FILL_ANSWERS`, `FILL_COVER_TEXT`) can be
+ * addressed straight back at it. Question ids (`oq_0`, `oq_1`, …) are unique only
+ * *within* a frame, so they are namespaced with the frame id on the way out and
+ * restored on the way back — answers can never land in a sibling's textarea.
  *
- * Question ids (`oq_0`, `oq_1`, …) are only unique *within* a frame, so they are
- * namespaced with the frame id on the way out and un-namespaced on the way back
- * (see {@link qualify} / {@link splitAnswersByFrame}). Answers can therefore
- * never land in the wrong frame's textarea.
- *
- * It sits next to the UI rather than in `shared/` because both extension pages
- * and the background worker import it; it stays free of React and of any DOM
- * assumption so the service worker can use it as-is.
+ * Lives next to the UI rather than in `shared/` because extension pages and the
+ * background worker both import it; free of React and of any DOM assumption so
+ * the service worker can use it as-is.
  */
 
 import {
@@ -90,6 +84,8 @@ const EMPTY_SUMMARY: FillSummary = {
   unrecognized: 0,
   fileInputs: 0,
   aiQuestions: 0,
+  noData: 0,
+  missingFields: [],
 };
 
 // ─── Content-script reply shapes ──────────────────────────────────────────────
@@ -276,16 +272,18 @@ export function splitAnswersByFrame(
 // ─── Public operations ────────────────────────────────────────────────────────
 
 /**
- * FR-2.1 — fill the form wherever it lives in the tab.
- *
- * The counters of all answering frames are summed, and the frame with the
- * largest `summary.total` becomes the target for follow-up messages (a page can
- * legitimately have two form frames — the biggest one is the application).
+ * Fill the form wherever it lives in the tab. The counters of all answering
+ * frames are summed, and the frame with the largest `summary.total` becomes the
+ * target for follow-up messages — a page can legitimately have two form frames,
+ * and the biggest one is the application.
  */
 export async function fillAllFrames(tabId: number, profileId: string): Promise<FillOutcome> {
   const { replies, reachable } = await ask<FillReply>(tabId, { type: 'FILL_FORM', profileId });
 
-  const summary: FillSummary = { ...EMPTY_SUMMARY };
+  // `missingFields` is re-created, not spread: a shallow copy would share the
+  // array with EMPTY_SUMMARY, so the first fill would permanently contaminate
+  // the constant and every later fill would inherit its entries.
+  const summary: FillSummary = { ...EMPTY_SUMMARY, missingFields: [] };
   const openQuestions: OpenQuestion[] = [];
   let primaryFrameId: number | null = null;
   let primaryTotal = -1;
@@ -307,6 +305,17 @@ export async function fillAllFrames(tabId: number, profileId: string): Promise<F
     summary.unrecognized += value.summary.unrecognized;
     summary.fileInputs += value.summary.fileInputs;
     summary.aiQuestions += value.summary.aiQuestions;
+    // Optional because a frame running an older content script omits them.
+    // Dropping them here is what kept the popup from ever showing "no data" —
+    // the difference between "we did not understand this field" and "we
+    // understood it and your profile is empty", of which only the second is
+    // actionable.
+    summary.noData = (summary.noData ?? 0) + (value.summary.noData ?? 0);
+    for (const field of value.summary.missingFields ?? []) {
+      if (!summary.missingFields) summary.missingFields = [];
+      // Two frames can be missing the same thing; the user needs it named once.
+      if (!summary.missingFields.includes(field)) summary.missingFields.push(field);
+    }
 
     for (const question of value.openQuestions ?? []) {
       openQuestions.push({ id: qualify(frameId, question.id), text: question.text });
@@ -334,8 +343,8 @@ export function fillFailureMessage(outcome: FillOutcome): string {
 }
 
 /**
- * FR-4.1 — job info for the cover-letter prompt and the journal entry.
- * Frames answer independently; the richest answer wins — never the fastest.
+ * Job info for the cover-letter prompt and the journal entry. Frames answer
+ * independently; the richest answer wins — never the fastest.
  */
 export async function readJobInfo(tabId: number): Promise<JobInfo | null> {
   const { replies } = await ask<JobInfoReply>(tabId, { type: 'EXTRACT_JOB_INFO' });
@@ -355,9 +364,9 @@ export async function readJobInfo(tabId: number): Promise<JobInfo | null> {
 }
 
 /**
- * FR-5.2 — insert the generated letter. Addressed to the frame that owns the
- * form when we know it, so the text cannot land in a chat widget in a sibling
- * frame. Broadcasts when no fill has happened yet in this popup session.
+ * Insert the generated letter. Addressed to the frame that owns the form when we
+ * know it, so the text cannot land in a sibling frame's chat widget. Broadcasts
+ * when no fill has happened yet in this popup session.
  */
 export async function insertCoverText(
   tabId: number,
@@ -388,8 +397,8 @@ export async function insertCoverText(
 }
 
 /**
- * FR-5.3 — deliver AI answers back to the exact frames the questions came from.
- * Returns how many textareas were written.
+ * Deliver AI answers back to the exact frames the questions came from. Returns
+ * how many textareas were written.
  */
 export async function sendAnswers(
   tabId: number,

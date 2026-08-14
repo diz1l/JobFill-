@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { FillSummary, JobInfo, ApplicationEntry, RemoteSyncStatus } from '../../shared/types';
 import { getProfiles, getActiveProfileId, setActiveProfileId } from '../../shared/storage/sync';
-import { getGroqApiKey, getApplicationLog } from '../../shared/storage/local';
+import { APPLICATION_LOG_KEY, getGroqApiKey, getApplicationLog } from '../../shared/storage/local';
+import { describeMissingData } from '../../shared/filler/missingData';
 import type { FromBackgroundMessage, OpenQuestion } from '../../shared/messages';
 import {
   fillAllFrames,
@@ -10,6 +11,7 @@ import {
   readJobInfo,
   sendAnswers,
 } from '../ui/frames';
+import { clearLastFill, pageKey, readLastFill, writeLastFill } from '../ui/lastFill';
 import { Select } from '../ui/Field';
 import { EmptyState, ErrorBanner, Skeleton } from '../ui/Feedback';
 import {
@@ -18,7 +20,7 @@ import {
 } from '../ui/Icons';
 
 /**
- * §5.9 — one predictable way to reach the settings.
+ * one predictable way to reach the settings.
  *
  * The old popup called `chrome.windows.create({ type: 'popup', width: 1280,
  * height: 720 })`, which (a) disagreed with the dialog Chrome opens from
@@ -42,7 +44,7 @@ function activeTab(): Promise<chrome.tabs.Tab | undefined> {
 const WEB_PAGE = /^https?:/i;
 
 /**
- * FR-6.3 — copy for a journal entry's remote state. `pending` is *not* terminal:
+ * Copy for a journal entry's remote state. `pending` is *not* terminal:
  * the background retries once after 60 s and rewrites the entry, so the popup
  * re-reads the log on every storage change and swaps the line below.
  */
@@ -67,6 +69,25 @@ interface ProfileOption { id: string; label: string }
 /** What the last "Log this application" produced, and in which state it was. */
 interface LogNotice { entryId: string; status: RemoteSyncStatus; text: string }
 
+/** The tab every popup action addresses, resolved once per open. */
+interface TabTarget { id: number; page: string }
+
+const MINUTE_MS = 60_000;
+
+/**
+ * Age of a restored fill, in words.
+ *
+ * A restored summary is a claim about something that happened *earlier*, and the
+ * popup owes the user that difference: "3 filled" from twenty minutes ago should
+ * not read the same as "3 filled" from two seconds ago.
+ */
+function ageLabel(at: number): string {
+  const minutes = Math.floor((Date.now() - at) / MINUTE_MS);
+  if (minutes < 1) return 'a moment ago';
+  if (minutes === 1) return '1 minute ago';
+  return `${minutes} minutes ago`;
+}
+
 export default function App() {
   const [status, setStatus] = useState<Status>('loading');
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
@@ -87,9 +108,16 @@ export default function App() {
   const [coverNotice, setCoverNotice] = useState<string | null>(null);
   /** Frame that owned the form in the last fill — target for every follow-up. */
   const [formFrameId, setFormFrameId] = useState<number | null>(null);
+  /** When the displayed fill happened; `null` means there is no fill to keep. */
+  const [filledAt, setFilledAt] = useState<number | null>(null);
+  /** The fill on screen came from storage, not from this popup session. */
+  const [restored, setRestored] = useState(false);
+  /** Storage has been consulted — until then nothing may be written back. */
+  const [hydrated, setHydrated] = useState(false);
+  const tabRef = useRef<TabTarget | null>(null);
 
   useEffect(() => {
-    // §5.6 — the popup used to render "No profiles yet" on the first frame of
+    // the popup used to render "No profiles yet" on the first frame of
     // every open, because chrome.storage resolves asynchronously. It now stays
     // in `loading` until the real answer arrives.
     Promise.all([getProfiles(), getActiveProfileId(), getGroqApiKey(), getApplicationLog()])
@@ -102,23 +130,69 @@ export default function App() {
       .catch(() => setError('Could not read your profiles from storage.'))
       .finally(() => setStatus('ready'));
 
-    // P0-5 — the posting may be described in an iframe (Greenhouse / Workable
-    // embeds). Ask every frame and keep the richest answer.
     void (async () => {
       const tab = await activeTab();
-      if (!tab?.id) return;
+      if (!tab?.id) { setHydrated(true); return; }
+      tabRef.current = { id: tab.id, page: pageKey(tab.url) };
+
+      // The popup is destroyed every time it loses focus, so the result of a
+      // fill has to be read back rather than remembered. Done before the job-info
+      // broadcast below, which takes a 400 ms collection window — the restored
+      // summary must not wait for it.
+      const previous = await readLastFill(tab.id, tabRef.current.page);
+      if (previous) {
+        setSummary(previous.summary);
+        setOpenQuestions(previous.openQuestions);
+        setFormFrameId(previous.formFrameId);
+        setGeneratedText(previous.generatedText);
+        setLogNotice(previous.logNotice);
+        setJobInfo(previous.jobInfo);
+        setFilledAt(previous.at);
+        setRestored(true);
+      }
+      setHydrated(true);
+
+      // The posting may be described in an iframe (Greenhouse / Workable
+      // embeds). Ask every frame and keep the richest answer; a live reading is
+      // better than the one stored with the fill, so it wins when it arrives.
       const info = await readJobInfo(tab.id);
       if (info) setJobInfo(info);
     })();
   }, []);
 
+  // Mirror of the state above, so that closing the popup does not destroy it.
+  // Everything a follow-up action needs — the summary that reveals "Log this
+  // application", the frame id, the questions, the generated letter — is one
+  // record, written whenever any part of it moves.
   useEffect(() => {
-    // FR-6.3 — a queued remote write resolves up to a minute later, in the
-    // background worker. It rewrites the journal in chrome.storage.local, so
-    // re-reading on every local change is what turns a `pending` badge into
-    // `ok` / `failed` while the popup is open.
-    const onStorageChanged = (_changes: unknown, areaName: string) => {
-      if (areaName !== 'local') return;
+    const tab = tabRef.current;
+    if (!hydrated || !tab) return;
+
+    if (filledAt === null || !summary) {
+      void clearLastFill(tab.id);
+      return;
+    }
+    void writeLastFill(tab.id, {
+      page: tab.page,
+      at: filledAt,
+      summary,
+      openQuestions,
+      formFrameId,
+      jobInfo,
+      generatedText,
+      logNotice,
+    });
+  }, [hydrated, filledAt, summary, openQuestions, formFrameId, jobInfo, generatedText, logNotice]);
+
+  useEffect(() => {
+    // A queued remote write resolves up to a minute later, in the background
+    // worker. It rewrites the journal in chrome.storage.local, so re-reading on
+    // every local change is what turns a `pending` badge into `ok` / `failed`
+    // while the popup is open. Narrowed to the journal's own key so the fill
+    // record above cannot make this fire on every keystroke when it falls back
+    // to `local` (Firefox < 115).
+    const onStorageChanged = (changes: Record<string, unknown>, areaName: string) => {
+      if (areaName !== 'local' || !(APPLICATION_LOG_KEY in changes)) return;
       void getApplicationLog().then((logs) => setRecentLogs(logs.slice(0, 10)));
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
@@ -131,16 +205,17 @@ export default function App() {
   }, []);
 
   /**
-   * P0-5 — one broadcast reaches every frame of the tab and the counters of all
-   * frames that answer are summed, because the form is regularly inside an
-   * iframe while the top frame holds nothing. Frames with nothing to say never
-   * answer (content.ts), so "nobody answered" means "no form here"; a tab with
-   * no content script at all is a different message again (`fillFailureMessage`).
+   * One broadcast reaches every frame of the tab and the counters of all frames
+   * that answer are summed, because the form is regularly inside an iframe while
+   * the top frame holds nothing. Frames with nothing to say never answer, so
+   * "nobody answered" means "no form here"; a tab with no content script at all
+   * is a different message again (`fillFailureMessage`).
    */
   const handleFill = useCallback(async () => {
     setFilling(true);
     setSummary(null); setOpenQuestions([]); setError(null);
     setLogNotice(null); setCoverNotice(null); setFormFrameId(null);
+    setFilledAt(null); setRestored(false);
 
     const tab = await activeTab();
     if (!tab?.id) { setError('No active tab.'); setFilling(false); return; }
@@ -149,6 +224,9 @@ export default function App() {
       setFilling(false);
       return;
     }
+    // The tab may have navigated since the popup opened, and the record is keyed
+    // by where the fill actually happened.
+    tabRef.current = { id: tab.id, page: pageKey(tab.url) };
 
     const outcome = await fillAllFrames(tab.id, activeId || '__active__');
     setFilling(false);
@@ -160,6 +238,7 @@ export default function App() {
     }
     setSummary(outcome.summary);
     setOpenQuestions(outcome.openQuestions);
+    setFilledAt(Date.now());
   }, [activeId]);
 
   const handleAnswerQuestions = useCallback(() => {
@@ -174,7 +253,7 @@ export default function App() {
           return;
         }
         // Question ids carry the frame they were collected in, so each frame
-        // gets its own answers back — never a sibling frame's (P0-5).
+        // gets its own answers back — never a sibling frame's.
         const tab = await activeTab();
         if (tab?.id) await sendAnswers(tab.id, resp.answers);
         setAnsweringQuestions(false);
@@ -211,7 +290,7 @@ export default function App() {
     else setError(result.error ?? 'No cover letter field found.');
   }, [generatedText, formFrameId]);
 
-  /** FR-6.1 — the only path that creates an ApplicationEntry. */
+  /** The only path that creates an ApplicationEntry. */
   const handleLogApplication = useCallback(async () => {
     setLogging(true); setLogNotice(null); setError(null);
     const tab = await activeTab();
@@ -311,7 +390,7 @@ export default function App() {
         </div>
       )}
 
-      {/* §5.7 — this is the popup's single scroll port. It only works because
+      {/* this is the popup's single scroll port. It only works because
           html/body carry the 600px ceiling (globals.css) and every ancestor
           here sets min-h-0. */}
       <div className="flex min-h-0 flex-1 flex-col divide-y divide-line overflow-y-auto">
@@ -327,6 +406,11 @@ export default function App() {
 
           {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
           {summary && <SummaryRow summary={summary} />}
+          {/* A restored summary describes something that already happened, and
+              says so — the alternative is a stale claim about the page. */}
+          {summary && restored && filledAt !== null && (
+            <p className="text-sm text-fg-subtle">Filled on this page {ageLabel(filledAt)}.</p>
+          )}
           {summary && (
             <button type="button" onClick={handleLogApplication} disabled={logging} className="btn btn-secondary w-full">
               {logging ? <><Spinner className="size-4" />Saving…</> : <><IconClipboard className="size-4" />Log this application</>}
@@ -404,7 +488,7 @@ export default function App() {
                 ))}
               </ul>
             ) : (
-              /* §5.10 — the list used to render nothing at all when empty. */
+              /* the list used to render nothing at all when empty. */
               <div className="mt-3">
                 <EmptyState
                   compact
@@ -437,7 +521,7 @@ function Shell({ header, children }: { header?: React.ReactNode; children: React
   );
 }
 
-/** §5.6 — same silhouette as the loaded popup, so nothing jumps on arrival. */
+/** same silhouette as the loaded popup, so nothing jumps on arrival. */
 function PopupSkeleton() {
   return (
     <Shell>
@@ -451,27 +535,47 @@ function PopupSkeleton() {
   );
 }
 
+/**
+ * The counters, plus the one thing a counter cannot say.
+ *
+ * `noData` is "we recognised this field and your profile has nothing for it",
+ * which used to be folded into `unrecognized` — so a blank cover-letter box on a
+ * first run was reported as *skipped*, indistinguishable from a control JobFill
+ * could not read. It shares the amber of `review` deliberately: both mean "this
+ * one needs you", and the labels tell them apart. `missingFields` names them, and
+ * that sentence is the only part of this row that is actionable, so it is the
+ * only part rendered in full prose.
+ *
+ * Both fields are optional on the wire (a frame on an older build omits them),
+ * hence the `?? 0` / `?? []`.
+ */
 function SummaryRow({ summary }: { summary: FillSummary }) {
   const items = [
     { value: summary.high, label: 'filled', className: 'text-conf-high' },
     { value: summary.medium, label: 'review', className: 'text-conf-medium' },
+    { value: summary.noData ?? 0, label: 'no data', className: 'text-conf-medium' },
     { value: summary.unrecognized, label: 'skipped', className: 'text-conf-none' },
     { value: summary.fileInputs, label: 'attach', className: 'text-conf-file' },
     { value: summary.aiQuestions, label: 'AI', className: 'text-conf-ai' },
   ].filter((i) => i.value > 0);
+
+  const missing = describeMissingData(summary.missingFields ?? []);
 
   if (items.length === 0) {
     return <p className="text-sm text-fg-muted">Nothing recognised on this page.</p>;
   }
 
   return (
-    <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
-      {items.map((item) => (
-        <div key={item.label} className="flex items-baseline gap-1.5">
-          <span className={`text-lg font-semibold tabular-nums ${item.className}`}>{item.value}</span>
-          <span className="text-xs uppercase tracking-wider text-fg-subtle">{item.label}</span>
-        </div>
-      ))}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+        {items.map((item) => (
+          <div key={item.label} className="flex items-baseline gap-1.5">
+            <span className={`text-lg font-semibold tabular-nums ${item.className}`}>{item.value}</span>
+            <span className="text-xs uppercase tracking-wider text-fg-subtle">{item.label}</span>
+          </div>
+        ))}
+      </div>
+      {missing && <p className="text-sm text-fg-muted">{missing}</p>}
     </div>
   );
 }

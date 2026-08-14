@@ -2,7 +2,7 @@
  * Inline SVG icon set.
  *
  * Deliberately dependency-free: no icon package is installed, and text glyphs
- * (`⚙`, `⚡`) render differently on macOS / Windows / Linux (§5.10). Every icon
+ * (`⚙`, `⚡`) render differently on macOS / Windows / Linux. Every icon
  * is a 24×24 stroked path that inherits `currentColor`, so it picks up the
  * theme tokens automatically.
  */

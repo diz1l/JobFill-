@@ -2,8 +2,8 @@ import type { ReactNode } from 'react';
 import { IconAlert, IconCheck } from './Icons';
 
 /**
- * The three states every screen owes the user (PROJECT_AUDIT §7.2 rule 6):
- * loading (skeleton) / empty (explanation + call to action) / error.
+ * The three states every screen owes the user: loading (skeleton), empty
+ * (explanation + call to action), and error.
  */
 
 export function EmptyState({

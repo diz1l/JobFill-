@@ -14,14 +14,14 @@ import { FRAME_REPLY, type FrameRequest } from '../shared/messages';
 import type { FillSummary } from '../shared/types';
 
 /**
- * P0-5 without `webNavigation`: the caller broadcasts one message to the whole
- * tab and collects the answers frames push back over `chrome.runtime.onMessage`.
+ * Reaching every frame without the `webNavigation` permission: the caller
+ * broadcasts one message to the whole tab and collects the answers frames push
+ * back over `chrome.runtime.onMessage`.
  *
- * The fake below is the other half of that contract — a tab made of frames that
- * behave exactly like `entrypoints/content.ts`: a frame with nothing to say
- * stays silent, a frame with something to say answers on the runtime bus with
- * the `requestId` it was given, and the only thing that ever reaches the caller
- * through `tabs.sendMessage` is a `lastError`.
+ * The fake below is the other half of that contract — frames that behave exactly
+ * like `entrypoints/content.ts`: a frame with nothing to say stays silent, one
+ * with something to say answers on the runtime bus with the `requestId` it was
+ * given, and the only thing `tabs.sendMessage` ever hands back is a `lastError`.
  */
 
 const TAB = 7;
@@ -31,9 +31,7 @@ const SILENT = Symbol('silent');
 
 interface FakeFrame {
   frameId: number;
-  /** Payload for a request, or {@link SILENT}. */
   answer: (message: FrameRequest) => unknown | typeof SILENT;
-  /** How long this frame takes to produce it. */
   delayMs?: number;
 }
 
@@ -112,13 +110,19 @@ function installFakeChrome(): void {
   (globalThis as unknown as { chrome: unknown }).chrome = { runtime, tabs };
 }
 
-/** Run out the collection window (plus slack for reply timers). */
 async function settleWindow(extraMs = 0): Promise<void> {
   await vi.advanceTimersByTimeAsync(COLLECT_WINDOW_MS + extraMs);
 }
 
 function summary(over: Partial<FillSummary> = {}): FillSummary {
-  return { total: 0, high: 0, medium: 0, unrecognized: 0, fileInputs: 0, aiQuestions: 0, ...over };
+  return {
+    total: 0, high: 0, medium: 0, unrecognized: 0, fileInputs: 0, aiQuestions: 0,
+    // `noData` / `missingFields` distinguish "we did not understand this field"
+    // from "we understood it and your profile has nothing to put there"; the
+    // aggregator used to drop both, so the popup could never say the second.
+    noData: 0, missingFields: [],
+    ...over,
+  };
 }
 
 function fillResult(over: Partial<FillSummary>, openQuestions: { id: string; text: string }[] = []) {
@@ -137,8 +141,6 @@ afterEach(() => {
   vi.useRealTimers();
   delete (globalThis as unknown as { chrome?: unknown }).chrome;
 });
-
-// ─── Broadcast + aggregation ──────────────────────────────────────────────────
 
 describe('fillAllFrames — aggregation across frames', () => {
   it('sums the counters of every frame that answers', async () => {
@@ -159,6 +161,44 @@ describe('fillAllFrames — aggregation across frames', () => {
       summary({ total: 8, high: 5, medium: 2, unrecognized: 1, fileInputs: 2, aiQuestions: 1 }),
     );
     expect(outcome.reachable).toBe(true);
+  });
+
+  it('sums noData and merges missingFields without repeating a name', async () => {
+    frames = [
+      {
+        frameId: 0,
+        answer: () => fillResult({ total: 2, noData: 2, missingFields: ['coverLetter', 'phone'] }),
+      },
+      {
+        // Same gap reported twice: the user has one missing template, not two.
+        frameId: 12,
+        answer: () => fillResult({ total: 1, noData: 1, missingFields: ['coverLetter'] }),
+      },
+    ];
+
+    const promise = fillAllFrames(TAB, 'p1');
+    await settleWindow();
+    const outcome = await promise;
+
+    expect(outcome.summary.noData).toBe(3);
+    expect(outcome.summary.missingFields).toEqual(['coverLetter', 'phone']);
+  });
+
+  it('does not let one fill contaminate the next through the empty-summary constant', async () => {
+    frames = [{ frameId: 0, answer: () => fillResult({ total: 1, noData: 1, missingFields: ['about'] }) }];
+    const first = fillAllFrames(TAB, 'p1');
+    await settleWindow();
+    await first;
+
+    // A shallow spread of EMPTY_SUMMARY would share the array, so 'about' would
+    // still be here on a page that has nothing missing at all.
+    frames = [{ frameId: 0, answer: () => fillResult({ total: 1, high: 1 }) }];
+    const second = fillAllFrames(TAB, 'p1');
+    await settleWindow();
+    const outcome = await second;
+
+    expect(outcome.summary.missingFields).toEqual([]);
+    expect(outcome.summary.noData).toBe(0);
   });
 
   it('never addresses a single frame — one broadcast reaches the whole tab', async () => {
@@ -192,8 +232,8 @@ describe('fillAllFrames — aggregation across frames', () => {
   });
 
   it('drops the frame that has nothing to contribute instead of letting it win', async () => {
-    // The bug P0-5 describes: the top frame is fastest and empty, the form is in
-    // an iframe. With `sendResponse` the popup saw the top frame's answer only.
+    // The bug: top frame is fastest and empty, the form is in an iframe. With
+    // `sendResponse` the popup only ever saw the top frame's answer.
     frames = [
       { frameId: 0, answer: () => SILENT },
       { frameId: 3, answer: () => fillResult({ total: 4, high: 4 }), delayMs: 30 },
@@ -221,8 +261,6 @@ describe('fillAllFrames — aggregation across frames', () => {
     expect((await promise).primaryFrameId).toBe(11);
   });
 });
-
-// ─── Question id namespacing ──────────────────────────────────────────────────
 
 describe('fillAllFrames — question ids', () => {
   it('namespaces identical ids from two frames so answers cannot cross over', async () => {
@@ -293,8 +331,6 @@ describe('fillAllFrames — question ids', () => {
   });
 });
 
-// ─── Request correlation ──────────────────────────────────────────────────────
-
 describe('request correlation', () => {
   it('ignores a reply that echoes a foreign requestId', async () => {
     frames = [
@@ -364,8 +400,6 @@ describe('request correlation', () => {
   });
 });
 
-// ─── The three distinct failure modes ─────────────────────────────────────────
-
 describe('failure modes', () => {
   it('reports "no fields" when every frame stays silent', async () => {
     frames = [
@@ -412,8 +446,6 @@ describe('failure modes', () => {
   });
 });
 
-// ─── Job info ─────────────────────────────────────────────────────────────────
-
 describe('readJobInfo', () => {
   it('keeps the richest answer, not the fastest', async () => {
     frames = [
@@ -443,8 +475,6 @@ describe('readJobInfo', () => {
     expect(await promise).toBeNull();
   });
 });
-
-// ─── Cover letter ─────────────────────────────────────────────────────────────
 
 describe('insertCoverText', () => {
   it('addresses the frame that owned the form and resolves as soon as it answers', async () => {

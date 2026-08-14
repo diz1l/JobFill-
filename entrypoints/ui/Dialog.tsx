@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 /**
- * Replacement for `confirm()` / `alert()` (§5.10).
+ * Replacement for `confirm()` / `alert()`.
  *
  * Built on the native <dialog> element: focus trapping, Esc-to-close, inert
  * background and the top layer come from the platform, so no focus-management

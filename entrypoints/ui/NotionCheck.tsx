@@ -5,13 +5,10 @@ import { ErrorBanner } from './Feedback';
 import { IconAlert, IconBolt, IconCheck, Spinner } from './Icons';
 
 /**
- * P1-13 — "Check connection" for the Notion backend.
- *
- * Until this existed, `inspectNotionDatabase` / `describeMapping` were written,
- * tested and unreachable: the user pasted a token and a database id blind and
- * found out about a schema mismatch only when an application failed to log.
- * The button reads the schema and renders the *same* mapping the write path
- * will use — one line per value JobFill wants to store.
+ * "Check connection" for the Notion backend. Without it the user pasted a token
+ * and a database id blind and found out about a schema mismatch only when an
+ * application failed to log. The button reads the schema and renders the *same*
+ * mapping the write path will use — one line per value JobFill wants to store.
  */
 
 /** Separator produced by `describeMapping`: `slot → "Name" (type)`. */
