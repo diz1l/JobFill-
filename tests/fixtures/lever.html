@@ -1,0 +1,106 @@
+<!--
+  Lever (jobs.lever.co) — structural patterns of the real application form.
+
+   * the control is *wrapped* by its <label>, with the caption in a nested
+     <span> and a required marker in another <span> (no `for` attribute);
+   * `name="name"` really is the applicant's full name — a bare `name` token
+     must therefore stay in the dictionary, guarded by negative contexts;
+   * link fields use bracket notation `urls[LinkedIn]`, so the identity lives
+     inside the brackets;
+   * custom questions use `cards[<uuid>][field0]` — an opaque name with the
+     question text only present as label text;
+   * "Current company" is a trap for the fullName / website rules.
+-->
+<html lang="en">
+<head><title>Product Designer - Lever</title></head>
+<body>
+  <div class="content-wrapper">
+    <div class="posting-header">
+      <h2>Product Designer</h2>
+      <div class="posting-categories">
+        <span class="location">Prague, Czechia</span>
+      </div>
+    </div>
+
+    <form class="application-form" method="POST">
+      <div class="application-question">
+        <label class="application-label required">
+          <span class="application-label-inner">Full name<span class="required" aria-hidden="true">✱</span></span>
+          <input type="text" name="name" required class="application-input" placeholder="Full name" />
+        </label>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label required">
+          <span class="application-label-inner">Email<span class="required" aria-hidden="true">✱</span></span>
+          <input type="email" name="email" required class="application-input" placeholder="Email" />
+        </label>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">Phone</span>
+          <input type="tel" name="phone" class="application-input" placeholder="Phone" />
+        </label>
+      </div>
+
+      <!-- TRAP: the employer's name, not the candidate's -->
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">Current company</span>
+          <input type="text" name="org" class="application-input" placeholder="Current company" />
+        </label>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">LinkedIn URL</span>
+          <input type="text" name="urls[LinkedIn]" class="application-input" placeholder="LinkedIn URL" />
+        </label>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">GitHub URL</span>
+          <input type="text" name="urls[GitHub]" class="application-input" placeholder="GitHub URL" />
+        </label>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">Portfolio URL</span>
+          <input type="text" name="urls[Portfolio]" class="application-input" placeholder="Portfolio URL" />
+        </label>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">Resume/CV<span class="required" aria-hidden="true">✱</span></span>
+          <input type="file" name="resume" required />
+        </label>
+      </div>
+
+      <div class="application-additional">
+        <div class="application-question custom-question">
+          <div class="application-label">What interests you about working at Lever?</div>
+          <textarea name="cards[3f8b1c2e-1a2b-4c3d-9e8f-7a6b5c4d3e2f][field0]" rows="6"></textarea>
+        </div>
+
+        <div class="application-question custom-question">
+          <div class="application-label">Additional information</div>
+          <textarea name="comments" rows="4" placeholder="Add a cover letter or anything else you want to share."></textarea>
+        </div>
+      </div>
+
+      <div class="application-question">
+        <label class="application-label">
+          <span class="application-label-inner">I agree to the privacy policy</span>
+          <input type="checkbox" name="consent" />
+        </label>
+      </div>
+
+      <button type="submit" class="postings-btn">Submit application</button>
+    </form>
+  </div>
+</body>
+</html>

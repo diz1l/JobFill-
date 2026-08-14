@@ -1,0 +1,86 @@
+<!--
+  Job board *search* page — the page the extension must keep its hands off.
+
+  This is where P1-2 bites: the "Location" filter looks exactly like a city
+  field on an application form, so the old dictionary happily typed the user's
+  home town into a search filter. It also carries the two other things that must
+  never be touched: a login password and a newsletter opt-in.
+
+  Patterns reproduced: `<form role="search">` with a keyword + location pair
+  (LinkedIn / Indeed / Jobs.cz all use this), a sidebar filter panel without
+  role=search, an account login form and a footer newsletter form.
+-->
+<html lang="en">
+<head><title>Backend developer jobs in Prague</title></head>
+<body>
+  <header class="global-header">
+    <form role="search" class="jobs-search-box" action="/jobs/search">
+      <input type="text" name="keywords" id="jobs-search-box-keyword-id"
+             aria-label="Search by title, skill, or company" placeholder="Title, skill or company" />
+      <input type="text" name="location" id="jobs-search-box-location-id"
+             aria-label="City, state, or zip code" placeholder="Location" />
+      <button type="submit">Search</button>
+    </form>
+  </header>
+
+  <main>
+    <h1>Backend developer jobs in Prague</h1>
+
+    <aside class="filters">
+      <h2>Filters</h2>
+
+      <!-- no role=search here: this one has to be defused by scoring alone -->
+      <div class="filter-row">
+        <label for="loc">Location</label>
+        <input type="text" id="loc" name="location" />
+      </div>
+
+      <div class="filter-row">
+        <label for="company">Company</label>
+        <input type="text" id="company" name="company" />
+      </div>
+
+      <div class="filter-row">
+        <label for="min-salary">Minimum salary</label>
+        <input type="text" id="min-salary" name="salary_min" />
+      </div>
+    </aside>
+
+    <section class="results">
+      <article class="job-card">
+        <h3>Backend Developer</h3>
+        <div class="job-card-meta">
+          <span class="company-name">Acme s.r.o.</span>
+          <span class="job-location">Prague</span>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <div class="account-panel">
+    <h2>Sign in</h2>
+    <form class="login-form" action="/login">
+      <div class="field">
+        <label for="login-email">Email</label>
+        <input type="email" id="login-email" name="session[email]" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" name="session[password]" autocomplete="current-password" />
+      </div>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <footer>
+    <form class="newsletter">
+      <label for="newsletter-email">Get new jobs by email</label>
+      <input type="email" id="newsletter-email" name="newsletter_email" />
+      <label class="consent">
+        <input type="checkbox" name="marketing_consent" />
+        I agree to receive marketing emails
+      </label>
+    </form>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,204 @@
+<!--
+  Workday (myworkdayjobs.com) — structural patterns of the real application form.
+
+  Everything a heuristic matcher hates is here, and all of it is verbatim
+  Workday convention:
+   * ids are auto-generated and carry no meaning (`input-9`, `input-33`);
+   * the field identity lives in `data-automation-id`;
+   * <label> has no `for`; the control is linked with
+     `aria-labelledby="<label-id> <required-marker-id>"` — a *list* of ids
+     (P1-5: resolving the whole attribute with getElementById returns null);
+   * the label sits in a sibling <div> of the input's grandparent, 3-4 wrappers deep;
+   * hashed emotion class names (`css-1x9lyaj`);
+   * collapsed sections stay in the DOM with `display:none`;
+   * read-only proxy inputs open custom pickers;
+   * the account step carries password / verify-password fields.
+-->
+<html lang="en">
+<head><title>Platform Engineer - Prague - Workday</title></head>
+<body>
+  <div data-automation-id="applyFlowPage" class="css-hp4l7t">
+    <h2 data-automation-id="jobPostingHeader" class="css-1id67r3">Platform Engineer</h2>
+
+    <div data-automation-id="jobLocation" class="css-129m7dg">
+      <div class="css-k008qs">Job location</div>
+      <div class="css-1t5f0fr">Prague, Czechia</div>
+    </div>
+
+    <form data-automation-id="applicationForm">
+      <div data-automation-id="legalNameSection" class="css-1x9lyaj">
+        <h4 data-automation-id="legalNameSection-title" class="css-1ry7f0h">Legal Name</h4>
+
+        <div data-automation-id="formField-legalNameSection_firstName" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="legalNameSection_firstName-label" class="css-1x8lyaj">First Name</label>
+            <abbr id="legalNameSection_firstName-required" title="required" aria-hidden="true">*</abbr>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="legalNameSection_firstName" id="input-9" type="text"
+                     aria-labelledby="legalNameSection_firstName-label legalNameSection_firstName-required" />
+            </div>
+          </div>
+        </div>
+
+        <div data-automation-id="formField-legalNameSection_lastName" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="legalNameSection_lastName-label" class="css-1x8lyaj">Last Name</label>
+            <abbr id="legalNameSection_lastName-required" title="required" aria-hidden="true">*</abbr>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="legalNameSection_lastName" id="input-11" type="text"
+                     aria-labelledby="legalNameSection_lastName-label legalNameSection_lastName-required" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-automation-id="addressSection" class="css-1x9lyaj">
+        <h4 data-automation-id="addressSection-title" class="css-1ry7f0h">Address</h4>
+
+        <div data-automation-id="formField-addressSection_addressLine1" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="addressSection_addressLine1-label" class="css-1x8lyaj">Address Line 1</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_addressLine1" id="input-31" type="text"
+                     aria-labelledby="addressSection_addressLine1-label" />
+            </div>
+          </div>
+        </div>
+
+        <div data-automation-id="formField-addressSection_city" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="addressSection_city-label" class="css-1x8lyaj">City</label>
+            <abbr id="addressSection_city-required" title="required" aria-hidden="true">*</abbr>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_city" id="input-33" type="text"
+                     aria-labelledby="addressSection_city-label addressSection_city-required" />
+            </div>
+          </div>
+        </div>
+
+        <!-- read-only proxy for a custom picker: never fillable -->
+        <div data-automation-id="formField-addressSection_countryRegion" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="addressSection_countryRegion-label" class="css-1x8lyaj">State</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_countryRegion" id="input-35" type="text" readonly
+                     aria-labelledby="addressSection_countryRegion-label" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-automation-id="contactInformationSection" class="css-1x9lyaj">
+        <h4 class="css-1ry7f0h">Contact Information</h4>
+
+        <div data-automation-id="formField-email" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="email-label" class="css-1x8lyaj">Email Address</label>
+            <abbr id="email-required" title="required" aria-hidden="true">*</abbr>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="email" id="input-41" type="text"
+                     aria-labelledby="email-label email-required" />
+            </div>
+          </div>
+        </div>
+
+        <div data-automation-id="formField-phone-number" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="phone-number-label" class="css-1x8lyaj">Phone Number</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="phone-number" id="input-45" type="text"
+                     aria-labelledby="phone-number-label" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- collapsed accordion: still in the DOM, must not be enumerated -->
+      <div data-automation-id="workExperienceSection" class="css-1x9lyaj" style="display:none">
+        <h4 class="css-1ry7f0h">Work Experience</h4>
+        <div data-automation-id="formField-workExperience_1_companyName" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="workExperience_1_companyName-label" class="css-1x8lyaj">Company Name</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="workExperience_1_companyName" id="input-61" type="text"
+                     aria-labelledby="workExperience_1_companyName-label" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-automation-id="applicationQuestions" class="css-1x9lyaj">
+        <h4 class="css-1ry7f0h">Application Questions</h4>
+
+        <div data-automation-id="formField-primaryQuestionnaire--question1" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="question1-label" class="css-1x8lyaj">What interests you about this role at our company?</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <textarea data-automation-id="primaryQuestionnaire--question1" id="input-77"
+                        aria-labelledby="question1-label" rows="5"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div data-automation-id="formField-primaryQuestionnaire--question2" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="question2-label" class="css-1x8lyaj">Earliest start date</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="primaryQuestionnaire--question2" id="input-79" type="text"
+                     aria-labelledby="question2-label" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-automation-id="createAccountSection" class="css-1x9lyaj">
+        <h4 class="css-1ry7f0h">Create Account</h4>
+
+        <div data-automation-id="formField-password" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="password-label" class="css-1x8lyaj">Password</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="password" id="input-91" type="password"
+                     aria-labelledby="password-label" />
+            </div>
+          </div>
+        </div>
+
+        <div data-automation-id="formField-verifyPassword" class="css-1sxa8ic">
+          <div class="css-k008qs">
+            <label id="verifyPassword-label" class="css-1x8lyaj">Verify New Password</label>
+          </div>
+          <div class="css-1yjgnfd">
+            <div class="css-1ijcfmg">
+              <input data-automation-id="verifyPassword" id="input-93" type="password"
+                     aria-labelledby="verifyPassword-label" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</body>
+</html>

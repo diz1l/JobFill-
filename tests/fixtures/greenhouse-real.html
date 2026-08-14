@@ -1,0 +1,221 @@
+<!--
+  Greenhouse job board — structural patterns of the real embedded form.
+
+  Reproduced from the shipped markup (not hand-idealised):
+   * hashed CSS class names, <div> wrappers 3-4 levels deep;
+   * legacy Rails field names `job_application[first_name]` alongside the newer
+     flat names;
+   * custom questions with opaque ids (`question_11842145`) whose text lives in
+     a <label> without `for`, linked through `aria-labelledby="<label> <marker>"`;
+   * `aria-describedby` help text;
+   * `<div role="combobox">` location picker instead of a <select>;
+   * trap fields a naive matcher fills with the candidate's data:
+     "Company name" (current employer), "Referral name", "Job location",
+     and the account password.
+-->
+<html lang="en">
+<head><title>Senior Backend Engineer at Acme — Greenhouse</title></head>
+<body>
+  <div class="app-container">
+    <header class="header--K3Rr">
+      <h1 class="app-title">Senior Backend Engineer</h1>
+      <div class="job-meta">
+        <span class="meta-label">Job location</span>
+        <span class="meta-value">Prague, Czechia</span>
+      </div>
+    </header>
+
+    <form id="application-form" class="application--form" novalidate>
+      <div class="form-section">
+        <h3 class="section-header">Submit your application</h3>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="first_name">First Name<span class="required" aria-hidden="true">*</span></label>
+          </div>
+          <div class="input-wrap">
+            <input id="first_name" name="job_application[first_name]" type="text" autocomplete="given-name" required />
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="last_name">Last Name<span class="required" aria-hidden="true">*</span></label>
+          </div>
+          <div class="input-wrap">
+            <input id="last_name" name="job_application[last_name]" type="text" autocomplete="family-name" required />
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="email">Email<span class="required" aria-hidden="true">*</span></label>
+          </div>
+          <div class="input-wrap">
+            <input id="email" name="job_application[email]" type="email" autocomplete="email" required />
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="phone">Phone</label>
+          </div>
+          <div class="input-wrap">
+            <input id="phone" name="job_application[phone]" type="tel" aria-describedby="phone-hint" />
+            <p id="phone-hint" class="hint">Include the country code, e.g. +420</p>
+          </div>
+        </div>
+
+        <!-- div-based combobox: the real location picker is not a <select> -->
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="candidate-location">Location (City)</label>
+          </div>
+          <div class="input-wrap">
+            <input id="candidate-location" name="job_application[location]" type="text"
+                   role="combobox" aria-autocomplete="list" aria-expanded="false"
+                   placeholder="City, Country" autocomplete="off" />
+            <div class="listbox--hidden" role="listbox" aria-hidden="true">
+              <div role="option">Prague, Czechia</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="resume">Resume/CV<span class="required" aria-hidden="true">*</span></label>
+          </div>
+          <div class="input-wrap">
+            <input id="resume" name="job_application[resume]" type="file" required />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 class="section-header">Current employment</h3>
+
+        <!-- TRAP: a naive `\bname\b` rule wrote the candidate's full name here -->
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="company_name">Company name</label>
+          </div>
+          <div class="input-wrap">
+            <input id="company_name" name="job_application[company_name]" type="text" />
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="company_website">Company website</label>
+          </div>
+          <div class="input-wrap">
+            <input id="company_website" name="job_application[company_website]" type="url" />
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="project_start">Project start date</label>
+          </div>
+          <div class="input-wrap">
+            <input id="project_start" name="job_application[project_start_date]" type="text" />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 class="section-header">Referral</h3>
+
+        <!-- TRAP: the referrer is a different person -->
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="referral_name">Referral name</label>
+          </div>
+          <div class="input-wrap">
+            <input id="referral_name" name="job_application[referral_name]" type="text" />
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="referral_email">Referral email</label>
+          </div>
+          <div class="input-wrap">
+            <input id="referral_email" name="job_application[referral_email]" type="email" />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 class="section-header">Additional information</h3>
+
+        <!-- Custom question: no `for`, label linked through an aria-labelledby list -->
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" id="question_11842145-label">Why do you want to work at Acme?</label>
+            <span class="required-note" id="question_11842145-required" aria-hidden="true">*</span>
+          </div>
+          <div class="input-wrap">
+            <textarea id="question_11842145"
+                      name="job_application[answers_attributes][0][text_value]"
+                      aria-labelledby="question_11842145-label question_11842145-required"
+                      rows="6"></textarea>
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" id="question_11842146-label">Tell us about a system you designed end to end.</label>
+          </div>
+          <div class="input-wrap">
+            <textarea id="question_11842146"
+                      name="job_application[answers_attributes][1][text_value]"
+                      aria-labelledby="question_11842146-label"
+                      rows="6"></textarea>
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="cover_letter_text">Cover letter</label>
+          </div>
+          <div class="input-wrap">
+            <textarea id="cover_letter_text" name="job_application[cover_letter_text]" rows="8"></textarea>
+          </div>
+        </div>
+
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="salary_expectation">Desired salary</label>
+          </div>
+          <div class="input-wrap">
+            <input id="salary_expectation" name="job_application[salary_expectation]" type="text" />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 class="section-header">Create your Greenhouse account</h3>
+
+        <!-- TRAP (P0-4): password must never be enumerated, scored or decorated -->
+        <div class="field--2Kk9x">
+          <div class="label-wrap">
+            <label class="label--3Nq" for="account_password">Password</label>
+          </div>
+          <div class="input-wrap">
+            <input id="account_password" name="user[password]" type="password" autocomplete="new-password" />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <label class="consent-label">
+          <input type="checkbox" name="job_application[gdpr_consent]" />
+          I consent to the processing of my personal data
+        </label>
+        <button type="submit" class="btn--submit">Submit application</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
