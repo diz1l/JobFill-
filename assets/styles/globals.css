@@ -1,48 +1,447 @@
 @import "tailwindcss";
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   JobFill design tokens
+   ---------------------------------------------------------------------------
+   Single source of truth for colour, type, spacing and radius.
+   Rules (PROJECT_AUDIT §7.2):
+     1. No hex literals in JSX — only token utilities.
+     2. No `[Npx]` arbitrary sizes in components — only the scales below.
+     3. Every interactive element gets a `:focus-visible` ring ≥ 3:1.
+     4. Content column ≤ --container-content, fields in minmax(--field-min, 1fr).
+     5. One scroll container per page.
+   Every text/background pair was verified against WCAG 2.1 (4.5:1 for text,
+   3:1 for non-text): worst text pair 4.56:1 dark / 4.68:1 light, worst
+   non-text pair 3.28:1 dark / 3.46:1 light. 0 failing pairs.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* ── Surfaces ─────────────────────────────────────────────────────────── */
+  --color-surface: #16181d;         /* page background                       */
+  --color-surface-raised: #1e2127;  /* header, sidebar, cards                */
+  --color-surface-sunken: #111317;  /* wells, code chips                     */
+  --color-surface-input: #272b33;   /* form control fill                     */
+  --color-surface-hover: #2e333c;   /* hover state                           */
+  --color-surface-active: #343a44;  /* selected nav item, pressed state      */
+
+  /* ── Lines ────────────────────────────────────────────────────────────── */
+  --color-line: #333843;            /* decorative dividers                   */
+  --color-line-strong: #7a8291;     /* control boundaries — ≥3:1 everywhere  */
+
+  /* ── Text ─────────────────────────────────────────────────────────────── */
+  --color-fg: #e7e9ee;              /* 14.62:1 on surface                    */
+  --color-fg-muted: #b3bac6;        /*  9.10:1 — labels, descriptions        */
+  --color-fg-subtle: #949cab;       /*  6.43:1 — captions, placeholders      */
+  --color-on-accent: #ffffff;       /*  5.15:1 on accent                     */
+
+  /* ── Accent ───────────────────────────────────────────────────────────── */
+  --color-accent: #2e6bcb;
+  --color-accent-hover: #3574d4;
+  --color-accent-active: #2a62bd;
+
+  /* ── Focus ────────────────────────────────────────────────────────────── */
+  --color-focus: #6cb0ff;           /* ≥5:1 against every surface            */
+
+  /* ── Semantic ─────────────────────────────────────────────────────────── */
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+  --color-danger-hover: #fca5a5;
+  --color-danger-surface: #2b1a1e;
+  --color-danger-line: #b05a5a;
+  --color-info: #7dd3fc;
+  --color-code: #f0b48a;
+
+  /* ── Fill-confidence semantics ────────────────────────────────────────────
+     Extension-UI variants (light-on-dark). The page-overlay variants live in
+     shared/filler/highlight.ts and are intentionally darker — they are drawn
+     on unknown third-party pages, which are usually light.                  */
+  --color-conf-high: #34d399;
+  --color-conf-medium: #fbbf24;
+  --color-conf-none: #9aa3b2;
+  --color-conf-ai: #c4b5fd;
+  --color-conf-file: #7dd3fc;
+
+  /* ── Type scale — one scale, no ad-hoc sizes ──────────────────────────── */
+  --text-xs: 11px;
+  --text-xs--line-height: 16px;
+  --text-sm: 12px;
+  --text-sm--line-height: 18px;
+  --text-base: 13px;
+  --text-base--line-height: 20px;
+  --text-lg: 15px;
+  --text-lg--line-height: 22px;
+  --text-xl: 18px;
+  --text-xl--line-height: 26px;
+  --text-2xl: 22px;
+  --text-2xl--line-height: 30px;
+
+  /* ── Radius scale ─────────────────────────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* ── Layout scale ─────────────────────────────────────────────────────── */
+  --container-popup: 380px;         /* Chrome action popup width             */
+  --container-content: 900px;       /* max content column on the options page*/
+  --container-editor: 70ch;         /* comfortable measure for textareas     */
+  --container-dialog: 400px;
+  --container-field: 440px;         /* single field outside the grid         */
+
+  --popup-height: 600px;            /* Chrome's hard ceiling for popups      */
+  --sidebar-width: 200px;           /* default; user-resizable, persisted    */
+  --sidebar-min: 140px;
+  --sidebar-max: 340px;
+
+  --field-min: 280px;               /* min column of the field grid          */
+}
+
+/* ── Light theme ────────────────────────────────────────────────────────────
+   Same token names, re-pointed. Declared in @layer base so it always wins
+   over @layer theme regardless of source order.                             */
+@layer base {
+  @media (prefers-color-scheme: light) {
+    :root {
+      --color-surface: #f6f7f9;
+      --color-surface-raised: #ffffff;
+      --color-surface-sunken: #eceef2;
+      --color-surface-input: #ffffff;
+      --color-surface-hover: #e9ecf1;
+      --color-surface-active: #dee2e9;
+
+      --color-line: #d7dbe2;
+      --color-line-strong: #767e8a;
+
+      --color-fg: #15181d;
+      --color-fg-muted: #4a515c;
+      --color-fg-subtle: #5d6570;
+      --color-on-accent: #ffffff;
+
+      --color-accent: #1b5fbe;
+      --color-accent-hover: #154d9c;
+      --color-accent-active: #123f80;
+
+      --color-focus: #1257b0;
+
+      --color-success: #15803d;
+      --color-warning: #8a5a00;
+      --color-danger: #c22626;
+      --color-danger-hover: #9c1c1c;
+      --color-danger-surface: #fdeceb;
+      --color-danger-line: #cf5b55;
+      --color-info: #0e6f9e;
+      --color-code: #9a4a12;
+
+      --color-conf-high: #15803d;
+      --color-conf-medium: #8a5a00;
+      --color-conf-none: #5d6570;
+      --color-conf-ai: #6d28d9;
+      --color-conf-file: #0e6f9e;
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 @layer base {
   :root {
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
-    color-scheme: dark;
-  }
-
-  body {
-    background: #1e1e1e;
-    color: #cccccc;
+    /* Native controls, scrollbars and form widgets follow the OS preference */
+    color-scheme: light dark;
   }
 
   * {
     box-sizing: border-box;
   }
+
+  body {
+    margin: 0;
+    background: var(--color-surface);
+    color: var(--color-fg);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+  }
+
+  /* §5.5 — one always-visible focus indicator for every interactive element.
+     `:where()` keeps specificity at 0 so components may restyle it, never
+     remove it. `outline-offset` puts the ring on the surrounding surface
+     (≥5:1) instead of on the control's own fill.                            */
+  :where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+    /* Belt and braces: even if a component ever animates `outline-color`,
+       the ring must appear instantly. */
+    transition-duration: 0s;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+
+  /* ── Popup shell ─────────────────────────────────────────────────────────
+     Chrome sizes the action popup from the document, so the height ceiling
+     has to be declared here. Without a definite/capped height on the
+     ancestors, `overflow-y-auto` on a flex child never engages (§5.7).      */
+  html.popup,
+  html.popup body {
+    width: var(--container-popup);
+    max-height: var(--popup-height);
+    overflow: hidden;
+  }
+
+  html.popup body,
+  html.popup #root {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  html.popup #root {
+    flex: 1 1 auto;
+  }
+
+  /* ── Options shell ───────────────────────────────────────────────────────
+     §5.1 — the page itself never scrolls; <main> is the only scroll port.   */
+  html.page,
+  html.page body,
+  html.page #root {
+    height: 100%;
+    overflow: hidden;
+  }
 }
 
+
+/* Tailwind's `transition-theme` includes `outline-color`, which would fade the
+   focus ring in over 150 ms. This is the same utility minus that property. */
+@utility transition-theme {
+  transition-property: color, background-color, border-color, fill, stroke;
+  transition-timing-function: var(--default-transition-timing-function, ease);
+  transition-duration: var(--default-transition-duration, 150ms);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Components
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 @layer components {
+  /* ── Form ─────────────────────────────────────────────────────────────── */
   .label {
-    @apply block text-[11px] font-medium tracking-widest uppercase text-[#767676] mb-1.5;
+    @apply block text-xs font-semibold tracking-wider uppercase text-fg-muted mb-1.5;
+  }
+
+  .hint {
+    @apply mt-1.5 text-sm text-fg-subtle;
   }
 
   .input {
-    @apply w-full rounded-md bg-[#3c3c3c] border border-[#505050] px-3 py-2.5 text-sm text-[#cccccc]
-           focus:outline-none focus:border-[#777] focus:bg-[#444]
-           placeholder:text-[#585858] transition-colors;
+    @apply w-full rounded-md border bg-surface-input px-3 py-2.5 text-base text-fg transition-theme;
+    border-color: var(--color-line-strong);
+  }
+
+  .input::placeholder {
+    color: var(--color-fg-subtle);
+    opacity: 1;
+  }
+
+  .input:hover:not(:disabled) {
+    background: var(--color-surface-hover);
+  }
+
+  .input:disabled {
+    @apply opacity-50 cursor-not-allowed;
+  }
+
+  /* Native <select> restyled to match the theme (§5.10). The chevron is a
+     sibling SVG drawn by the Select component — no data-URI colours.        */
+  .select {
+    @apply appearance-none pr-9 cursor-pointer;
+  }
+
+  textarea.input {
+    @apply leading-relaxed;
+  }
+
+  /* ── Buttons — always used as `btn btn-<variant>` ─────────────────────── */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4
+           text-base font-medium whitespace-nowrap transition-theme select-none;
+    min-height: 2.25rem; /* 36px — comfortable pointer target */
+  }
+
+  .btn:disabled {
+    @apply opacity-45 cursor-not-allowed;
   }
 
   .btn-primary {
-    @apply rounded-md bg-[#0e639c] text-white font-medium text-sm px-5 py-2.5
-           hover:bg-[#1177bb] active:scale-[.98] transition-all whitespace-nowrap;
+    @apply bg-accent text-on-accent;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-accent-hover);
+  }
+
+  .btn-primary:active:not(:disabled) {
+    background: var(--color-accent-active);
   }
 
   .btn-secondary {
-    @apply rounded-md border border-[#505050] bg-transparent px-3 py-2 text-[#cccccc] text-sm
-           hover:border-[#777] hover:bg-[#2d2d2d] transition-colors whitespace-nowrap;
+    @apply border bg-transparent text-fg;
+    border-color: var(--color-line-strong);
   }
 
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--color-surface-hover);
+  }
+
+  .btn-ghost {
+    @apply bg-transparent text-fg-muted px-2;
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    @apply text-fg;
+    background: var(--color-surface-hover);
+  }
+
+  .btn-danger {
+    @apply bg-transparent text-danger px-2;
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    @apply text-danger-hover;
+    background: var(--color-danger-surface);
+  }
+
+  /* A <label> wrapping a visually-hidden <input type="file">: the input takes
+     the focus, so the label has to render the ring on its behalf. */
+  .btn-file:has(input:focus-visible) {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  /* Icon-only button — 32×32 hit area (§5.10 asks for ≥24px). */
+  .btn-icon {
+    @apply inline-flex size-8 shrink-0 items-center justify-center rounded-md
+           text-fg-muted transition-theme;
+  }
+
+  .btn-icon:hover:not(:disabled) {
+    @apply text-fg;
+    background: var(--color-surface-hover);
+  }
+
+  /* ── Pills / nav ──────────────────────────────────────────────────────── */
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5
+           text-base text-fg-muted transition-theme;
+    border-color: var(--color-line-strong);
+  }
+
+  .pill:hover {
+    @apply text-fg;
+    background: var(--color-surface-hover);
+  }
+
+  .pill-active,
+  .pill-active:hover {
+    @apply bg-accent text-on-accent;
+    border-color: var(--color-accent);
+  }
+
+  .nav-item {
+    @apply flex w-full items-center gap-2.5 overflow-hidden rounded-md px-3 py-2
+           text-left text-base whitespace-nowrap text-fg-muted transition-theme;
+  }
+
+  .nav-item:hover {
+    @apply text-fg;
+    background: var(--color-surface-hover);
+  }
+
+  .nav-item-active,
+  .nav-item-active:hover {
+    @apply font-medium text-fg;
+    background: var(--color-surface-active);
+  }
+
+  /* ── Typography ───────────────────────────────────────────────────────── */
   .section-title {
-    @apply text-[15px] font-semibold text-[#e8e8e8] mb-0.5;
+    @apply text-lg font-semibold text-fg;
   }
 
   .section-desc {
-    @apply text-[13px] text-[#767676] mb-5;
+    @apply text-base text-fg-muted;
+  }
+
+  .code-chip {
+    @apply rounded bg-surface-sunken px-1.5 py-0.5 text-sm text-code;
+  }
+
+  /* ── Layout ───────────────────────────────────────────────────────────── */
+  .content-column {
+    @apply mx-auto w-full;
+    max-width: var(--container-content);
+  }
+
+  /* §5.2 — fields never stretch across the whole window.
+     `auto-fill` (not `auto-fit`) keeps the empty tracks, so a lone field
+     occupies one column instead of ballooning to the full 900px row.        */
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--field-min), 1fr));
+    gap: 1rem 1.5rem;
+  }
+
+  .card {
+    @apply rounded-lg border bg-surface-raised p-4;
+    border-color: var(--color-line);
+  }
+
+  /* ── Feedback ─────────────────────────────────────────────────────────── */
+  .banner-error {
+    @apply flex items-start gap-2 rounded-md border px-3 py-2 text-sm text-danger;
+    background: var(--color-danger-surface);
+    border-color: var(--color-danger-line);
+  }
+
+  .skeleton {
+    @apply rounded-md bg-surface-hover;
+    animation: jf-pulse 1.4s ease-in-out infinite;
+  }
+
+  /* ── Dialog — replaces confirm()/alert() (§5.10) ──────────────────────── */
+  .dialog {
+    @apply rounded-lg border p-0 text-fg;
+    /* Tailwind's preflight resets `margin: 0` on every element, which cancels
+       the UA's `dialog { margin: auto }` and pins the modal to the top-left. */
+    margin: auto;
+    width: var(--container-dialog);
+    max-width: calc(100% - 2rem);
+    background: var(--color-surface-raised);
+    border-color: var(--color-line);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  }
+
+  .dialog::backdrop {
+    background: rgb(0 0 0 / 0.55);
+  }
+}
+
+@keyframes jf-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

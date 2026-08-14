@@ -1,17 +1,75 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { FillSummary, JobInfo } from '../../shared/types';
+import type { FillSummary, JobInfo, ApplicationEntry, RemoteSyncStatus } from '../../shared/types';
 import { getProfiles, getActiveProfileId, setActiveProfileId } from '../../shared/storage/sync';
 import { getGroqApiKey, getApplicationLog } from '../../shared/storage/local';
-import type { ApplicationEntry } from '../../shared/types';
-import type { OpenQuestion } from '../../shared/messages';
+import type { FromBackgroundMessage, OpenQuestion } from '../../shared/messages';
+import {
+  fillAllFrames,
+  fillFailureMessage,
+  insertCoverText,
+  readJobInfo,
+  sendAnswers,
+} from '../ui/frames';
+import { Select } from '../ui/Field';
+import { EmptyState, ErrorBanner, Skeleton } from '../ui/Feedback';
+import {
+  IconSettings, IconBolt, IconUser, IconInbox, IconSparkles,
+  IconClipboard, IconChevronDown, IconChevronRight, Spinner,
+} from '../ui/Icons';
 
+/**
+ * §5.9 — one predictable way to reach the settings.
+ *
+ * The old popup called `chrome.windows.create({ type: 'popup', width: 1280,
+ * height: 720 })`, which (a) disagreed with the dialog Chrome opens from
+ * chrome://extensions and (b) sizes the *window*, not the viewport, so the
+ * "16:9" window actually rendered at 1265×633. `openOptionsPage()` respects the
+ * `open_in_tab` flag declared in options/index.html, so both entry points land
+ * on the same full-width tab.
+ */
 function openSettings() {
-  const url = chrome.runtime.getURL('options.html');
-  chrome.windows.create({ url, type: 'popup', width: 1280, height: 720, focused: true });
+  chrome.runtime.openOptionsPage();
 }
 
+/** The tab every popup action addresses. `undefined` when the window has none. */
+function activeTab(): Promise<chrome.tabs.Tab | undefined> {
+  return new Promise((resolve) =>
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => resolve(tabs[0])),
+  );
+}
+
+/** Pages without a content script — saying "no fields" there would be a lie. */
+const WEB_PAGE = /^https?:/i;
+
+/**
+ * FR-6.3 — copy for a journal entry's remote state. `pending` is *not* terminal:
+ * the background retries once after 60 s and rewrites the entry, so the popup
+ * re-reads the log on every storage change and swaps the line below.
+ */
+const LOG_NOTICE: Record<RemoteSyncStatus, string> = {
+  off: 'Saved to your local application log.',
+  ok: 'Saved and synced to your logging backend.',
+  pending: 'Saved locally. Syncing to your backend…',
+  failed: 'Saved locally — syncing to your backend failed.',
+};
+
+const SYNC_TITLE: Record<RemoteSyncStatus, string> = {
+  off: 'Local copy only — no logging backend configured',
+  ok: 'Synced to your logging backend',
+  pending: 'Waiting for a background retry',
+  failed: 'Backend sync failed — the local copy is kept',
+};
+
+type Status = 'loading' | 'ready';
+
+interface ProfileOption { id: string; label: string }
+
+/** What the last "Log this application" produced, and in which state it was. */
+interface LogNotice { entryId: string; status: RemoteSyncStatus; text: string }
+
 export default function App() {
-  const [profiles, setProfiles] = useState<Array<{ id: string; label: string }>>([]);
+  const [status, setStatus] = useState<Status>('loading');
+  const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [activeId, setActiveId] = useState('');
   const [filling, setFilling] = useState(false);
   const [summary, setSummary] = useState<FillSummary | null>(null);
@@ -24,24 +82,47 @@ export default function App() {
   const [hasGroqKey, setHasGroqKey] = useState(false);
   const [recentLogs, setRecentLogs] = useState<ApplicationEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
+  const [logging, setLogging] = useState(false);
+  const [logNotice, setLogNotice] = useState<LogNotice | null>(null);
+  const [coverNotice, setCoverNotice] = useState<string | null>(null);
+  /** Frame that owned the form in the last fill — target for every follow-up. */
+  const [formFrameId, setFormFrameId] = useState<number | null>(null);
 
   useEffect(() => {
-    Promise.all([getProfiles(), getActiveProfileId(), getGroqApiKey(), getApplicationLog()]).then(
-      ([profs, aid, key, logs]) => {
+    // §5.6 — the popup used to render "No profiles yet" on the first frame of
+    // every open, because chrome.storage resolves asynchronously. It now stays
+    // in `loading` until the real answer arrives.
+    Promise.all([getProfiles(), getActiveProfileId(), getGroqApiKey(), getApplicationLog()])
+      .then(([profs, aid, key, logs]) => {
         setProfiles(profs.map((p) => ({ id: p.id, label: p.label })));
         setActiveId(aid || profs[0]?.id || '');
         setHasGroqKey(Boolean(key));
         setRecentLogs(logs.slice(0, 10));
-      },
-    );
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tab = tabs[0];
+      })
+      .catch(() => setError('Could not read your profiles from storage.'))
+      .finally(() => setStatus('ready'));
+
+    // P0-5 — the posting may be described in an iframe (Greenhouse / Workable
+    // embeds). Ask every frame and keep the richest answer.
+    void (async () => {
+      const tab = await activeTab();
       if (!tab?.id) return;
-      chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_JOB_INFO' }, (resp) => {
-        if (chrome.runtime.lastError) return;
-        if (resp?.jobInfo) setJobInfo(resp.jobInfo);
-      });
-    });
+      const info = await readJobInfo(tab.id);
+      if (info) setJobInfo(info);
+    })();
+  }, []);
+
+  useEffect(() => {
+    // FR-6.3 — a queued remote write resolves up to a minute later, in the
+    // background worker. It rewrites the journal in chrome.storage.local, so
+    // re-reading on every local change is what turns a `pending` badge into
+    // `ok` / `failed` while the popup is open.
+    const onStorageChanged = (_changes: unknown, areaName: string) => {
+      if (areaName !== 'local') return;
+      void getApplicationLog().then((logs) => setRecentLogs(logs.slice(0, 10)));
+    };
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    return () => chrome.storage.onChanged.removeListener(onStorageChanged);
   }, []);
 
   const handleProfileChange = useCallback(async (id: string) => {
@@ -49,42 +130,56 @@ export default function App() {
     await setActiveProfileId(id);
   }, []);
 
+  /**
+   * P0-5 — one broadcast reaches every frame of the tab and the counters of all
+   * frames that answer are summed, because the form is regularly inside an
+   * iframe while the top frame holds nothing. Frames with nothing to say never
+   * answer (content.ts), so "nobody answered" means "no form here"; a tab with
+   * no content script at all is a different message again (`fillFailureMessage`).
+   */
   const handleFill = useCallback(async () => {
-    setFilling(true); setSummary(null); setOpenQuestions([]); setError(null);
-    const [tab] = await new Promise<chrome.tabs.Tab[]>((res) =>
-      chrome.tabs.query({ active: true, currentWindow: true }, res),
-    );
+    setFilling(true);
+    setSummary(null); setOpenQuestions([]); setError(null);
+    setLogNotice(null); setCoverNotice(null); setFormFrameId(null);
+
+    const tab = await activeTab();
     if (!tab?.id) { setError('No active tab.'); setFilling(false); return; }
-    chrome.tabs.sendMessage(tab.id, { type: 'FILL_FORM', profileId: activeId || '__active__' }, (resp) => {
+    if (tab.url && !WEB_PAGE.test(tab.url)) {
+      setError('JobFill only works on regular web pages.');
       setFilling(false);
-      if (chrome.runtime.lastError) { setError('Cannot connect. Refresh the page.'); return; }
-      if (resp?.error) { setError(resp.error); return; }
-      if (resp?.summary) setSummary(resp.summary);
-      if (resp?.openQuestions?.length) setOpenQuestions(resp.openQuestions);
-    });
+      return;
+    }
+
+    const outcome = await fillAllFrames(tab.id, activeId || '__active__');
+    setFilling(false);
+    setFormFrameId(outcome.primaryFrameId);
+
+    if (outcome.answered === 0) {
+      setError(fillFailureMessage(outcome));
+      return;
+    }
+    setSummary(outcome.summary);
+    setOpenQuestions(outcome.openQuestions);
   }, [activeId]);
 
-  const handleAnswerQuestions = useCallback(async () => {
+  const handleAnswerQuestions = useCallback(() => {
     if (!openQuestions.length || !hasGroqKey) return;
     setAnsweringQuestions(true); setError(null);
     chrome.runtime.sendMessage(
       { type: 'ANSWER_QUESTIONS', questions: openQuestions, profileId: activeId, jobInfo: jobInfo ?? {} },
-      async (resp) => {
-        if (resp?.type === 'ANSWERS_RESULT') {
-          const [tab] = await new Promise<chrome.tabs.Tab[]>((res) =>
-            chrome.tabs.query({ active: true, currentWindow: true }, res),
-          );
-          if (tab?.id) {
-            chrome.tabs.sendMessage(tab.id, { type: 'FILL_ANSWERS', answers: resp.answers }, () => {
-              setAnsweringQuestions(false);
-              setOpenQuestions([]);
-              setSummary((s) => s ? { ...s, aiQuestions: 0 } : s);
-            });
-          }
-        } else {
+      async (resp: FromBackgroundMessage | undefined) => {
+        if (resp?.type !== 'ANSWERS_RESULT') {
           setAnsweringQuestions(false);
           if (resp?.type === 'API_ERROR') setError(resp.message);
+          return;
         }
+        // Question ids carry the frame they were collected in, so each frame
+        // gets its own answers back — never a sibling frame's (P0-5).
+        const tab = await activeTab();
+        if (tab?.id) await sendAnswers(tab.id, resp.answers);
+        setAnsweringQuestions(false);
+        setOpenQuestions([]);
+        setSummary((s) => (s ? { ...s, aiQuestions: 0 } : s));
       },
     );
   }, [openQuestions, hasGroqKey, activeId, jobInfo]);
@@ -93,7 +188,7 @@ export default function App() {
     setGenerating(true); setGeneratedText(''); setError(null);
     chrome.runtime.sendMessage(
       { type: 'GENERATE_COVER', jobInfo: jobInfo ?? {}, profileId: activeId },
-      (resp) => {
+      (resp: FromBackgroundMessage | undefined) => {
         setGenerating(false);
         if (resp?.type === 'GENERATION_RESULT') setGeneratedText(resp.text);
         else if (resp?.type === 'API_ERROR') setError(resp.message);
@@ -101,195 +196,299 @@ export default function App() {
     );
   }, [jobInfo, activeId]);
 
+  /**
+   * The insert used to be fire-and-forget: when no field could be justified the
+   * user was told nothing at all. It is now addressed to the frame that owned
+   * the form and always reports back.
+   */
+  const handleInsertCover = useCallback(async () => {
+    setError(null); setCoverNotice(null);
+    const tab = await activeTab();
+    if (!tab?.id) { setError('No active tab.'); return; }
+
+    const result = await insertCoverText(tab.id, generatedText, formFrameId);
+    if (result.success) setCoverNotice('Inserted into the page.');
+    else setError(result.error ?? 'No cover letter field found.');
+  }, [generatedText, formFrameId]);
+
+  /** FR-6.1 — the only path that creates an ApplicationEntry. */
+  const handleLogApplication = useCallback(async () => {
+    setLogging(true); setLogNotice(null); setError(null);
+    const tab = await activeTab();
+    chrome.runtime.sendMessage(
+      { type: 'LOG_APPLICATION', jobInfo: jobInfo ?? {}, profileId: activeId, url: tab?.url ?? '' },
+      (resp: FromBackgroundMessage | undefined) => {
+        setLogging(false);
+        if (resp?.type !== 'LOG_RESULT') {
+          setError(resp?.type === 'API_ERROR' ? resp.message : 'The application could not be saved.');
+          return;
+        }
+        // `success: false` means even the local copy failed — there is no entry
+        // worth listing, only an error to explain.
+        if (!resp.success) {
+          setError(resp.message ?? 'The application could not be saved.');
+          return;
+        }
+        // The background appends before it answers, so the storage subscription
+        // may have listed this entry already: replace, never duplicate.
+        setRecentLogs((logs) =>
+          [resp.entry, ...logs.filter((e) => e.id !== resp.entry.id)].slice(0, 10),
+        );
+        setShowLogs(true);
+        setLogNotice({
+          entryId: resp.entry.id,
+          status: resp.remoteSync,
+          text: resp.message ?? LOG_NOTICE[resp.remoteSync],
+        });
+      },
+    );
+  }, [jobInfo, activeId]);
+
+  // A `pending` entry is resolved by a background retry (60 s). Once the stored
+  // status moves on, the notice follows it instead of claiming "syncing…" for
+  // the rest of the session.
+  const liveSync = logNotice
+    ? recentLogs.find((e) => e.id === logNotice.entryId)?.remoteSync
+    : undefined;
+  const logNoticeText = logNotice
+    ? liveSync && liveSync !== logNotice.status
+      ? LOG_NOTICE[liveSync]
+      : logNotice.text
+    : null;
+
+  if (status === 'loading') return <PopupSkeleton />;
+
   if (profiles.length === 0) {
     return (
-      <div className="w-[380px] h-[214px] bg-[#1e1e1e] text-[#cccccc] flex flex-col items-center justify-center gap-4 text-center p-8">
-        <span className="font-semibold text-[#e8e8e8]">JobFill</span>
-        <p className="text-[13px] text-[#767676]">No profiles yet. Add one in settings to get started.</p>
-        <button onClick={openSettings} className="btn-primary w-full max-w-[200px]">
-          Open Settings
-        </button>
-      </div>
+      <Shell>
+        <div className="flex flex-1 flex-col justify-center gap-3 p-4">
+          {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+          <EmptyState
+            compact
+            icon={<IconUser className="size-8" />}
+            title="No profiles yet"
+            description="Add your details once, then fill any application form in a click."
+            action={
+              <button type="button" onClick={openSettings} className="btn btn-primary">
+                Open settings
+              </button>
+            }
+          />
+        </div>
+      </Shell>
     );
   }
 
   return (
-    <div className="w-[380px] bg-[#1e1e1e] text-[#cccccc] flex flex-col font-sans text-[13px] overflow-hidden">
-      {/* Header */}
-      <header className="bg-[#252526] border-b border-[#3e3e42] px-4 py-3 flex items-center justify-between">
-        <span className="font-semibold text-[#e8e8e8] text-sm">JobFill</span>
-        <div className="flex items-center gap-3">
+    <Shell
+      header={
+        <>
           {profiles.length > 1 ? (
-            <select
+            <Select
+              label="Active profile"
+              hideLabel
               value={activeId}
-              onChange={(e) => handleProfileChange(e.target.value)}
-              className="bg-[#3c3c3c] border border-[#505050] text-[#cccccc] text-xs rounded px-2 py-1 focus:outline-none focus:border-[#777]"
-            >
-              {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select>
+              onChange={handleProfileChange}
+              options={profiles.map((p) => ({ value: p.id, label: p.label }))}
+              className="min-w-0 flex-1"
+            />
           ) : (
-            <span className="text-xs text-[#767676]">{profiles[0]?.label}</span>
+            <span className="min-w-0 flex-1 truncate text-right text-sm text-fg-muted">
+              {profiles[0]?.label}
+            </span>
           )}
-          <button
-            onClick={openSettings}
-            className="text-[#767676] hover:text-[#cccccc] transition-colors text-base leading-none"
-            title="Settings"
-          >⚙</button>
-        </div>
-      </header>
-
-      {/* Job info bar */}
+          <button type="button" onClick={openSettings} className="btn-icon" title="Settings" aria-label="Settings">
+            <IconSettings className="size-5" />
+          </button>
+        </>
+      }
+    >
       {jobInfo && (jobInfo.company || jobInfo.position) && (
-        <div className="px-4 py-2 bg-[#252526] border-b border-[#3e3e42]">
-          <p className="text-xs text-[#767676] truncate">
+        <div className="shrink-0 border-b border-line bg-surface-raised px-4 py-2">
+          <p className="truncate text-sm text-fg-muted">
             {[jobInfo.position, jobInfo.company].filter(Boolean).join('  ·  ')}
           </p>
         </div>
       )}
 
-      {/* Content — scrollable */}
-      <div className="flex-1 overflow-y-auto flex flex-col divide-y divide-[#2d2d2d]">        {/* Fill */}
-        <div className="p-4 flex flex-col gap-3">
+      {/* §5.7 — this is the popup's single scroll port. It only works because
+          html/body carry the 600px ceiling (globals.css) and every ancestor
+          here sets min-h-0. */}
+      <div className="flex min-h-0 flex-1 flex-col divide-y divide-line overflow-y-auto">
+        <section className="flex flex-col gap-3 p-4">
           <button
+            type="button"
             onClick={handleFill}
             disabled={filling || !activeId}
-            className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="btn btn-primary w-full"
           >
-            {filling ? <><Spinner />Filling…</> : 'Fill Form'}
+            {filling ? <><Spinner className="size-4" />Filling…</> : <><IconBolt className="size-4" />Fill form</>}
           </button>
 
-          {error && (
-            <div className="bg-[#2d1b1b] border border-[#6b2b2b] rounded px-3 py-2 text-xs text-[#f48771]">
-              {error}
-            </div>
-          )}
-
+          {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
           {summary && <SummaryRow summary={summary} />}
-        </div>
+          {summary && (
+            <button type="button" onClick={handleLogApplication} disabled={logging} className="btn btn-secondary w-full">
+              {logging ? <><Spinner className="size-4" />Saving…</> : <><IconClipboard className="size-4" />Log this application</>}
+            </button>
+          )}
+          {logNoticeText && <p className="text-sm text-fg-muted" role="status">{logNoticeText}</p>}
+        </section>
 
-        {/* AI */}
         {hasGroqKey && (
-          <div className="p-4 flex flex-col gap-2">
+          <section className="flex flex-col gap-3 p-4">
             {openQuestions.length > 0 && (
-              <ActionButton
+              <button
+                type="button"
                 onClick={handleAnswerQuestions}
-                loading={answeringQuestions}
-                loadingLabel="Answering…"
-                label={`Answer ${openQuestions.length} open question${openQuestions.length > 1 ? 's' : ''}`}
-              />
+                disabled={answeringQuestions}
+                className="btn btn-secondary w-full"
+              >
+                {answeringQuestions
+                  ? <><Spinner className="size-4" />Answering…</>
+                  : <><IconSparkles className="size-4" />
+                      {`Answer ${openQuestions.length} open question${openQuestions.length > 1 ? 's' : ''}`}
+                    </>}
+              </button>
             )}
-            <ActionButton
-              onClick={handleGenerate}
-              loading={generating}
-              loadingLabel="Generating…"
-              label="Generate motivation"
-            />
+            <button type="button" onClick={handleGenerate} disabled={generating} className="btn btn-secondary w-full">
+              {generating
+                ? <><Spinner className="size-4" />Generating…</>
+                : <><IconSparkles className="size-4" />Generate motivation</>}
+            </button>
             {generatedText && (
-              <div className="flex flex-col gap-2 pt-1">
+              <div className="flex flex-col gap-2">
+                <label className="sr-only" htmlFor="jf-cover">Generated motivation letter</label>
                 <textarea
+                  id="jf-cover"
                   value={generatedText}
                   onChange={(e) => setGeneratedText(e.target.value)}
-                  className="input h-28 resize-none text-[13px] leading-relaxed"
+                  rows={6}
+                  className="input resize-none"
                 />
-                <button
-                  onClick={() => {
-                    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-                      if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'FILL_COVER_TEXT', text: generatedText });
-                    });
-                  }}
-                  className="btn-primary w-full"
-                >Insert into field</button>
+                <button type="button" onClick={handleInsertCover} className="btn btn-primary w-full">
+                  Insert into field
+                </button>
+                {coverNotice && (
+                  <p className="text-sm text-fg-muted" role="status">{coverNotice}</p>
+                )}
               </div>
             )}
-          </div>
+          </section>
         )}
 
-        {/* Recent logs */}
-        {recentLogs.length > 0 && (
-          <div className="px-4 py-3">
-            <button
-              onClick={() => setShowLogs((v) => !v)}
-              className="flex w-full items-center justify-between text-xs text-[#767676] hover:text-[#cccccc] transition-colors"
-            >
-              <span>Recent applications ({recentLogs.length})</span>
-              <span>{showLogs ? '−' : '+'}</span>
-            </button>
-            {showLogs && (
-              <div className="mt-2 flex flex-col max-h-36 overflow-y-auto">
-                {recentLogs.map((e) => (
-                  <div key={e.id} className="flex items-center justify-between py-1.5 border-b border-[#2d2d2d] last:border-0 gap-2">
-                    <span className="truncate text-xs text-[#858585] min-w-0">{e.position || e.company || e.url}</span>
-                    <span className={`shrink-0 text-[11px] ${
-                      e.remoteSync === 'ok' ? 'text-[#4ec9b0]' : e.remoteSync === 'failed' ? 'text-[#f48771]' : 'text-[#767676]'
-                    }`}>{e.remoteSync}</span>
-                  </div>
+        <section className="p-4">
+          <button
+            type="button"
+            onClick={() => setShowLogs((v) => !v)}
+            aria-expanded={showLogs}
+            className="flex w-full items-center justify-between gap-2 text-sm text-fg-muted hover:text-fg"
+          >
+            <span>Recent applications{recentLogs.length > 0 ? ` (${recentLogs.length})` : ''}</span>
+            {showLogs ? <IconChevronDown className="size-4" /> : <IconChevronRight className="size-4" />}
+          </button>
+
+          {showLogs && (
+            recentLogs.length > 0 ? (
+              <ul className="mt-3 flex flex-col">
+                {recentLogs.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between gap-2 border-b border-line py-1.5 last:border-0"
+                  >
+                    <span className="min-w-0 truncate text-sm text-fg-muted">
+                      {entry.position || entry.company || entry.url}
+                    </span>
+                    <SyncBadge status={entry.remoteSync} />
+                  </li>
                 ))}
+              </ul>
+            ) : (
+              /* §5.10 — the list used to render nothing at all when empty. */
+              <div className="mt-3">
+                <EmptyState
+                  compact
+                  icon={<IconInbox className="size-6" />}
+                  title="Nothing logged yet"
+                  description="Fill a form, then use “Log this application” to keep a record of it."
+                />
               </div>
-            )}
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="px-4 py-2.5 flex items-center justify-end">
-          <a
-            href="https://www.instagram.com/dias_nur420/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[11px] text-[#585858] hover:text-[#767676] transition-colors"
-          >@dias_nur420</a>
-        </div>
+            )
+          )}
+        </section>
       </div>
+    </Shell>
+  );
+}
+
+// ─── Shell & states ───────────────────────────────────────────────────────────
+
+/** Fixed chrome shared by every popup state, so opening never shifts the layout. */
+function Shell({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-surface text-fg">
+      <header className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-raised px-4 py-2.5">
+        <IconBolt className="size-4 text-accent" />
+        <span className="font-semibold text-fg">JobFill</span>
+        {header}
+      </header>
+      {children}
     </div>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+/** §5.6 — same silhouette as the loaded popup, so nothing jumps on arrival. */
+function PopupSkeleton() {
+  return (
+    <Shell>
+      <div className="flex flex-col gap-3 p-4" aria-busy="true" aria-label="Loading">
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+    </Shell>
+  );
+}
 
 function SummaryRow({ summary }: { summary: FillSummary }) {
   const items = [
-    { value: summary.high, label: 'filled', color: '#4ec9b0' },
-    ...(summary.medium > 0 ? [{ value: summary.medium, label: 'review', color: '#ce9178' }] : []),
-    ...(summary.unrecognized > 0 ? [{ value: summary.unrecognized, label: 'skipped', color: '#585858' }] : []),
-    ...(summary.fileInputs > 0 ? [{ value: summary.fileInputs, label: 'attach', color: '#767676' }] : []),
-    ...(summary.aiQuestions > 0 ? [{ value: summary.aiQuestions, label: 'AI', color: '#9cdcfe' }] : []),
+    { value: summary.high, label: 'filled', className: 'text-conf-high' },
+    { value: summary.medium, label: 'review', className: 'text-conf-medium' },
+    { value: summary.unrecognized, label: 'skipped', className: 'text-conf-none' },
+    { value: summary.fileInputs, label: 'attach', className: 'text-conf-file' },
+    { value: summary.aiQuestions, label: 'AI', className: 'text-conf-ai' },
   ].filter((i) => i.value > 0);
 
-  if (items.length === 0) return null;
+  if (items.length === 0) {
+    return <p className="text-sm text-fg-muted">Nothing recognised on this page.</p>;
+  }
 
   return (
-    <div className="flex items-center gap-5 px-0.5 pt-0.5">
+    <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
       {items.map((item) => (
         <div key={item.label} className="flex items-baseline gap-1.5">
-          <span className="text-[15px] font-semibold tabular-nums leading-none" style={{ color: item.color }}>
-            {item.value}
-          </span>
-          <span className="text-[10px] uppercase tracking-wider text-[#585858]">{item.label}</span>
+          <span className={`text-lg font-semibold tabular-nums ${item.className}`}>{item.value}</span>
+          <span className="text-xs uppercase tracking-wider text-fg-subtle">{item.label}</span>
         </div>
       ))}
     </div>
   );
 }
 
-function ActionButton({
-  onClick, loading, loadingLabel, label,
-}: { onClick: () => void; loading: boolean; loadingLabel: string; label: string }) {
+/** `pending` is a live state — the background retries once and rewrites it. */
+function SyncBadge({ status }: { status: RemoteSyncStatus }) {
+  const tone =
+    status === 'ok'
+      ? 'text-success'
+      : status === 'failed'
+        ? 'text-danger'
+        : status === 'pending'
+          ? 'text-warning'
+          : 'text-fg-subtle';
   return (
-    <button
-      onClick={onClick}
-      disabled={loading}
-      className="w-full rounded border border-[#505050] bg-transparent py-2 text-xs text-[#cccccc] hover:border-[#777] hover:bg-[#2d2d2d] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-    >
-      {loading ? <><Spinner size="sm" />{loadingLabel}</> : label}
-    </button>
-  );
-}
-
-function Spinner({ size = 'md' }: { size?: 'sm' | 'md' }) {
-  const s = size === 'sm' ? 'h-3 w-3' : 'h-4 w-4';
-  return (
-    <svg className={`animate-spin ${s} shrink-0`} viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-      <path className="opacity-70" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
+    <span className={`shrink-0 text-xs ${tone}`} title={SYNC_TITLE[status]}>
+      {status}
+    </span>
   );
 }

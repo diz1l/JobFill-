@@ -1,8 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- `class="popup"` switches on the fixed 380px width and the 600px height
+     ceiling declared in assets/styles/globals.css (§5.7) — without a bounded
+     ancestor the popup's `overflow-y-auto` region can never scroll. -->
+<html lang="en" class="popup">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>JobFill</title>
   </head>
   <body>
