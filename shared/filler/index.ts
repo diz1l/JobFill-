@@ -10,12 +10,17 @@ import {
   buildClassificationBatch,
   buildFingerprint,
   enumerateFillable,
+  serializeFingerprint,
+  type ClassificationBatch,
   type FieldFingerprint,
   type FillableElement,
 } from '../field-matcher/fingerprint';
 import { scoreField } from '../field-matcher/scorer';
+import type { SelectQuestion } from '../messages';
 import { setNativeValue } from './setNativeValue';
-import { fillSelect } from './selectStrategy';
+import { fillSelect, selectOptionByLabel } from './selectStrategy';
+import { buildSelectBatch, isUnanswered } from './selectQuestions';
+import { isDeclarationField } from './questionPolicy';
 import { highlightField } from './highlight';
 import { isSensitiveControl, isInsideAuthForm } from './fillable';
 import { rememberRecognizedCoverField } from './coverTarget';
@@ -155,11 +160,21 @@ export function fillPage(profile: Profile, opts: FillOptions = {}): CompleteFill
       countMatch(summary, confidence);
       highlightField(el, confidence, durationMs);
     } else {
-      // A <select> with no option resembling the value — recognised, but there
-      // is nothing to pick. The LLM cannot help with that, so it is not a
-      // classification candidate either.
+      // A <select> whose list has no option resembling the value: recognised,
+      // and still empty. It used to end here, on the grounds that naming the
+      // field again could not produce a value — true while the model could only
+      // answer with the user's own data, and no longer true now that it can
+      // point at one of the list's own options. `Phone Type` is the case: the
+      // profile holds a number, the list wants Mobile / Home / Work, and the
+      // number is not an answer however well it is matched.
+      //
+      // It stays counted as `unrecognized` (the data exists, it just does not
+      // fit — nothing in settings fixes that), but it is now offered to the
+      // second pass, where the dropdown policy decides whether it may be asked
+      // about at all.
       summary.unrecognized++;
       highlightField(el, 'none', durationMs);
+      opts.onUnresolved?.(fp);
     }
   }
 
@@ -195,6 +210,16 @@ export type ClassifyTransport = (
   fingerprints: string[],
 ) => Promise<Record<string, string> | undefined>;
 
+/**
+ * Sends the dropdown batch and returns the model's `select index → option index`
+ * map. Injected for the same reasons as {@link ClassifyTransport}, and absent by
+ * default: a caller that does not pass one has a pass that never looks at a
+ * `<select>`'s options, let alone sends them.
+ */
+export type ChooseOptionsTransport = (
+  selects: SelectQuestion[],
+) => Promise<Record<string, number> | undefined>;
+
 export interface LlmPassOptions {
   /**
    * The opt-in, read from `AppSettings.llmFieldClassification`. Fail-closed:
@@ -202,13 +227,19 @@ export interface LlmPassOptions {
    */
   enabled: boolean;
   classify: ClassifyTransport;
+  /**
+   * Optional second half of the pass: which of a dropdown's own options answers
+   * it. Omitting it is the same as the feature being off for selects — no option
+   * list is read, none is sent, and nothing is chosen.
+   */
+  chooseOptions?: ChooseOptionsTransport;
   highlightDurationMs?: number;
   /** Same pre-resolved text `fillPage` was given, for a classified cover field. */
   coverLetterText?: string;
 }
 
 export interface LlmPassResult {
-  /** Controls the model's answer actually filled. */
+  /** Controls the model's answer actually filled, dropdowns included. */
   filled: number;
   /** Fingerprints that were put on the wire (0 when the feature is off). */
   sent: number;
@@ -220,8 +251,8 @@ export interface LlmPassResult {
   confidence: LlmFieldConfidence;
 }
 
-function nothingClassified(sent = 0): LlmPassResult {
-  return { filled: 0, sent, confidence: LLM_FIELD_CONFIDENCE };
+function nothingClassified(): LlmPassResult {
+  return { filled: 0, sent: 0, confidence: LLM_FIELD_CONFIDENCE };
 }
 
 /**
@@ -230,7 +261,7 @@ function nothingClassified(sent = 0): LlmPassResult {
  * started typing into the very field the model is describing. Their input wins.
  */
 function isUntouched(el: FillableElement): boolean {
-  if (el instanceof HTMLSelectElement) return el.selectedIndex <= 0 || el.value === '';
+  if (el instanceof HTMLSelectElement) return isUnanswered(el);
   return el.value.trim() === '';
 }
 
@@ -256,18 +287,50 @@ export async function classifyUnresolvedFields(
   // Fail-closed. This is the last gate before anything leaves the page.
   if (options.enabled !== true) return nothingClassified();
 
+  const durationMs = options.highlightDurationMs ?? DEFAULT_HIGHLIGHT_MS;
   const batch = buildClassificationBatch(candidates);
-  if (batch.payload.length === 0) return nothingClassified();
 
+  /**
+   * Controls the first half wrote into. Carried to the second half because
+   * `isUnanswered` cannot see the difference: a list whose *first* entry is a
+   * real answer still reads as "sitting on its placeholder" once it has been
+   * selected, and asking about a dropdown the profile has just answered is the
+   * one way the model could overwrite stored data with a guess.
+   */
+  const written = new Set<FillableElement>();
+
+  // Values first, choices second, and never the other way round: a dropdown the
+  // profile can answer must be answered from the profile. What reaches the
+  // second call is only what is still empty afterwards.
+  let filled =
+    batch.payload.length === 0
+      ? 0
+      : await fillFromTemplates(profile, batch, options, durationMs, written);
+  filled += await fillFromOptions(
+    candidates.filter((field) => !written.has(field.element)),
+    options,
+    durationMs,
+  );
+
+  return { filled, sent: batch.payload.length, confidence: LLM_FIELD_CONFIDENCE };
+}
+
+/** The value-template half. Returns how many controls it wrote into. */
+async function fillFromTemplates(
+  profile: Profile,
+  batch: ClassificationBatch,
+  options: LlmPassOptions,
+  durationMs: number,
+  written: Set<FillableElement>,
+): Promise<number> {
   let classifications: Record<string, string> | undefined;
   try {
     classifications = await options.classify(batch.payload);
   } catch {
-    return nothingClassified(batch.payload.length); // silent by design
+    return 0; // silent by design
   }
-  if (!classifications) return nothingClassified(batch.payload.length);
+  if (!classifications) return 0;
 
-  const durationMs = options.highlightDurationMs ?? DEFAULT_HIGHLIGHT_MS;
   let filled = 0;
 
   for (const [key, answer] of Object.entries(classifications)) {
@@ -283,6 +346,13 @@ export async function classifyUnresolvedFields(
     // Defence in depth: a model instruction is not a reason to write profile
     // data into a credential field.
     if (isSensitiveControl(el) || isInsideAuthForm(el)) continue;
+    // Nor to make a declaration on the applicant's behalf. `validateFieldTemplates`
+    // drops these in the worker and again in the content script's transport;
+    // this is the same rule applied where the writing actually happens, so it
+    // holds for any caller and any transport. A template can only carry the
+    // user's own values — and "Yes", borrowed from `workPermit`, is still an
+    // answer to "Have you ever been convicted?" that the user never gave.
+    if (isDeclarationField(serializeFingerprint(field))) continue;
 
     const value = resolveValue(answer, profile, options.coverLetterText ?? '', field);
     if (!value) continue; // unknown type, or the profile has nothing to offer
@@ -295,10 +365,70 @@ export async function classifyUnresolvedFields(
       rememberRecognizedCoverField(el);
     }
     highlightField(el, LLM_FIELD_CONFIDENCE, durationMs);
+    written.add(el);
     filled++;
   }
 
-  return { filled, sent: batch.payload.length, confidence: LLM_FIELD_CONFIDENCE };
+  return filled;
+}
+
+/**
+ * The dropdown half: ask which of a list's own options answers it, then select
+ * that option.
+ *
+ * What can be written here is narrow by construction. The batch is built from
+ * selects that are still unanswered and whose question policy allows
+ * (`buildSelectBatch`); the worker applies the same filter again before the
+ * request leaves the browser; the reply is validated against the batch on the
+ * way back through `validateOptionChoices`, both in the worker and in the page;
+ * and what is finally written is one of the labels this page itself offered,
+ * looked up by text rather than by position. A model that answers a question it
+ * was told not to answer cannot reach this code at all — the select it would
+ * have to address was never in the batch, so no index refers to it.
+ *
+ * The two re-checks that *are* here are the ones the request cannot make
+ * obsolete: seconds have passed, so the control may have gone, and the user may
+ * have answered it themselves. Their answer wins.
+ */
+async function fillFromOptions(
+  candidates: readonly FieldFingerprint[],
+  options: LlmPassOptions,
+  durationMs: number,
+): Promise<number> {
+  const ask = options.chooseOptions;
+  if (!ask) return 0;
+
+  const asked = buildSelectBatch(candidates);
+  if (asked.length === 0) return 0;
+
+  let choices: Record<string, number> | undefined;
+  try {
+    choices = await ask(asked.map((entry) => entry.question));
+  } catch {
+    return 0; // silent by design, exactly like the template pass
+  }
+  if (!choices) return 0;
+
+  let filled = 0;
+
+  for (const [key, choice] of Object.entries(choices)) {
+    const entry = asked[Number(key)];
+    if (!entry) continue;
+
+    // Annotated rather than inferred: an index the model invented is exactly
+    // what this line is here to catch, and `string` would not admit the miss.
+    const label: string | undefined = entry.question.options[choice];
+    if (label === undefined) continue;
+
+    const el = entry.element;
+    if (!el.isConnected || !isUnanswered(el)) continue;
+    if (!selectOptionByLabel(el, label)) continue;
+
+    highlightField(el, LLM_FIELD_CONFIDENCE, durationMs);
+    filled++;
+  }
+
+  return filled;
 }
 
 export { LLM_FIELD_CONFIDENCE } from '../types';

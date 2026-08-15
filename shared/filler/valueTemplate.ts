@@ -43,17 +43,38 @@ import type { FieldShape } from './fieldShape';
  * spellings live in {@link DERIVED_VALUE_KEYS}; a template may use either.
  */
 export const PROFILE_VALUE_KEYS = [
+  // ── Name ──
   'firstName',
+  'middleName',
   'lastName',
+  'preferredName',
+  'nameSuffix',
+  // ── Contact ──
   'email',
   'phone',
-  'city',
   'linkedin',
   'github',
   'website',
+  // ── Address ──
+  'addressLine1',
+  'addressLine2',
+  'city',
+  'state',
+  'postalCode',
+  'country',
+  // ── Background ──
+  'nationality',
+  'dateOfBirth',
+  'workPermit',
+  'education',
+  'drivingLicence',
+  'preferredLanguage',
+  // ── Work ──
+  'currentTitle',
+  'currentEmployer',
+  'yearsOfExperience',
   'salary',
   'availability',
-  'workPermit',
   'about',
   /** Not a profile property — the resolved cover-letter text for this posting. */
   'coverLetter',
@@ -75,23 +96,49 @@ export interface ValueContext {
   coverLetter?: string;
 }
 
-const PLACEHOLDER = /\{([a-zA-Z]+)\}/g;
+/**
+ * A placeholder name: a letter, then letters or digits.
+ *
+ * Digits were admitted for `{addressLine1}` / `{addressLine2}`, which is how
+ * every ATS in existence spells those two boxes and therefore the only
+ * self-describing name for them. The *leading* letter is what keeps the
+ * grammar safe: `{1990}` is still not a placeholder, so a bare number cannot
+ * reach a form by being wrapped in braces — it stays literal text, which the
+ * validator in `shared/api/fieldTemplates.ts` refuses outright.
+ */
+const PLACEHOLDER = /\{([a-zA-Z][a-zA-Z0-9]*)\}/g;
 
 /** The atoms a template can draw on, flattened out of the context. */
 function atoms(ctx: ValueContext): Record<TemplateValueKey, string> {
   const p = ctx.profile;
   const stored = {
     firstName: p.firstName,
+    middleName: p.middleName,
     lastName: p.lastName,
+    preferredName: p.preferredName,
+    nameSuffix: p.nameSuffix,
     email: p.email,
     phone: p.phone,
-    city: p.city,
     linkedin: p.linkedin,
     github: p.github,
     website: p.website,
+    addressLine1: p.addressLine1,
+    addressLine2: p.addressLine2,
+    city: p.city,
+    state: p.state,
+    postalCode: p.postalCode,
+    country: p.country,
+    nationality: p.nationality,
+    dateOfBirth: p.dateOfBirth,
+    workPermit: p.workPermit,
+    education: p.education,
+    drivingLicence: p.drivingLicence,
+    preferredLanguage: p.preferredLanguage,
+    currentTitle: p.currentTitle,
+    currentEmployer: p.currentEmployer,
+    yearsOfExperience: p.yearsOfExperience,
     salary: p.salaryExpectation,
     availability: p.availability,
-    workPermit: p.workPermit,
     about: p.about,
     coverLetter: ctx.coverLetter ?? '',
   };
@@ -193,22 +240,51 @@ function repairGaps(text: string): string {
  * their whole name into one settings box, and a form asking for the two halves
  * separately still gets them. `{firstName}` / `{lastName}` remain valid — a
  * template may always name the stored atom directly.
+ *
+ * Three of the newer types default to a *derived* spelling rather than to the
+ * stored string, on the same grounds as `city` → `{cityName}`: it is the
+ * spelling the plain, unadorned version of that field asks for.
+ *   `country`      → the full name, expanded from a stored `CZ` where the table
+ *                    knows it, and left as written where it does not.
+ *   `dateOfBirth`  → ISO, which is the only value `<input type="date">` accepts
+ *                    and the one a text box is least likely to reject.
+ *   `postalCode`   → without its internal space, which is what a validating
+ *                    postcode box wants and which no reader minds.
+ * The other spellings — `{countryCode}`, `{dobDotted}`, the three-box
+ * `{dobDay}` / `{dobMonth}` / `{dobYear}`, `{experienceYears}` for a numeric
+ * control — are selected by the variant table when a field asks for them.
  */
 export const DEFAULT_TEMPLATES: Record<string, ValueTemplate> = {
   firstName: '{givenName}',
+  middleName: '{middleName}',
   lastName: '{familyName}',
+  preferredName: '{preferredName}',
+  nameSuffix: '{nameSuffix}',
   fullName: '{givenName} {familyName}',
   email: '{email}',
   phone: '{phone}',
   linkedin: '{linkedin}',
   github: '{github}',
   website: '{website}',
-  salary: '{salary}',
+  addressLine1: '{addressLine1}',
+  addressLine2: '{addressLine2}',
   city: '{cityName}',
-  coverLetter: '{coverLetter}',
-  availability: '{availability}',
+  state: '{state}',
+  postalCode: '{postalCodeCompact}',
+  country: '{countryName}',
+  nationality: '{nationality}',
+  dateOfBirth: '{dobIso}',
   workPermit: '{workPermit}',
+  education: '{education}',
+  drivingLicence: '{drivingLicence}',
+  preferredLanguage: '{preferredLanguage}',
+  currentTitle: '{currentTitle}',
+  currentEmployer: '{currentEmployer}',
+  yearsOfExperience: '{yearsOfExperience}',
+  salary: '{salary}',
+  availability: '{availability}',
   about: '{about}',
+  coverLetter: '{coverLetter}',
 };
 
 /**
@@ -273,7 +349,7 @@ export function resolveFieldType(fieldType: string, ctx: ValueContext, shape?: F
   return resolveTemplate(selectTemplate(fieldType, ctx, shape), ctx);
 }
 
-const IS_TEMPLATE = /\{[a-zA-Z]+\}/;
+const IS_TEMPLATE = /\{[a-zA-Z][a-zA-Z0-9]*\}/;
 
 /**
  * Resolve whatever the classifier answered with — a template or a bare field

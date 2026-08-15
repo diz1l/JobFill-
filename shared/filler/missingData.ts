@@ -24,17 +24,33 @@ export const COVER_LETTER_FIELD = 'coverLetter';
  */
 export const MISSING_DATA_LABELS: Readonly<Record<string, string>> = {
   firstName: 'first name',
+  middleName: 'middle name',
   lastName: 'last name',
   fullName: 'name',
+  preferredName: 'preferred name',
+  nameSuffix: 'name suffix',
   email: 'email',
   phone: 'phone',
   linkedin: 'LinkedIn URL',
   github: 'GitHub URL',
   website: 'website',
-  salary: 'salary expectation',
+  addressLine1: 'street address',
+  addressLine2: 'second address line',
   city: 'city',
-  availability: 'availability',
+  state: 'state or region',
+  postalCode: 'postcode',
+  country: 'country',
+  nationality: 'nationality',
+  dateOfBirth: 'date of birth',
   workPermit: 'work permit',
+  education: 'education',
+  drivingLicence: 'driving licence',
+  preferredLanguage: 'preferred language',
+  currentTitle: 'current job title',
+  currentEmployer: 'current employer',
+  yearsOfExperience: 'years of experience',
+  salary: 'salary expectation',
+  availability: 'availability',
   about: 'about text',
 };
 
@@ -43,7 +59,9 @@ const MAX_NAMED = 3;
 
 /** `a`, `a and b`, `a, b and c`, `a, b, c and 2 more`. */
 function joinList(items: readonly string[]): string {
-  if (items.length <= 1) return items[0] ?? '';
+  // `join` rather than `items[0] ?? ''`: same answer for none and for one, and
+  // no branch that no caller can reach.
+  if (items.length <= 1) return items.join('');
   const named = items.slice(0, MAX_NAMED);
   const rest = items.length - named.length;
   const tail = rest > 0 ? `${rest} more` : named.pop()!;

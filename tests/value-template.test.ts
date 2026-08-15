@@ -30,22 +30,42 @@ import { buildFingerprint } from '../shared/field-matcher/fingerprint';
 import { createEmptyProfile, type Profile } from '../shared/types';
 
 /**
- * The profile the whole file composes from: two name atoms, a phone in E.164, a
- * LinkedIn URL, a salary with a currency in it — every case below is the same
- * eight facts, re-spelled for the form that is asking.
+ * The profile the whole file composes from: name atoms, a phone in E.164, a
+ * LinkedIn URL, a salary with a currency in it, a date of birth in ISO — every
+ * case below is the same set of facts, re-spelled for the form that is asking.
+ *
+ * Every entry is filled, which one test below depends on: "every name in the
+ * vocabulary resolves to something" is what stops a placeholder being added to
+ * the list the model is shown without anything behind it.
  */
 const PROFILE: Profile = createEmptyProfile({
   firstName: 'Dias',
+  middleName: 'Serik',
   lastName: 'Nurgaliyev',
+  preferredName: 'Dee',
+  nameSuffix: 'Jr.',
   email: 'dias@example.com',
   phone: '+420123456789',
   city: 'Praha, Czechia',
   linkedin: 'https://www.linkedin.com/in/dias-nur',
   github: 'github.com/diz1l',
   website: 'dias.dev',
+  addressLine1: 'Vinohradská 1511/230',
+  addressLine2: 'byt 4',
+  state: 'Hlavní město Praha',
+  postalCode: '100 00',
+  country: 'Czechia',
+  nationality: 'Kazakhstani',
+  dateOfBirth: '1990-03-15',
+  workPermit: 'EU citizen',
+  education: "Master's degree",
+  drivingLicence: 'B',
+  preferredLanguage: 'English',
+  currentTitle: 'Frontend Engineer',
+  currentEmployer: 'Acme s.r.o.',
+  yearsOfExperience: '5+',
   salaryExpectation: '80 000 Kč',
   availability: '1 September',
-  workPermit: 'EU citizen',
   about: 'I build things that work.',
 });
 
@@ -73,13 +93,18 @@ describe('derived atoms', () => {
     const p = { ...PROFILE, ...overrides };
     return deriveAtoms({
       firstName: p.firstName,
+      middleName: p.middleName,
       lastName: p.lastName,
       phone: p.phone,
       city: p.city,
+      postalCode: p.postalCode,
+      country: p.country,
       linkedin: p.linkedin,
       github: p.github,
       website: p.website,
       salary: p.salaryExpectation,
+      dateOfBirth: p.dateOfBirth,
+      yearsOfExperience: p.yearsOfExperience,
     });
   };
 
@@ -221,6 +246,99 @@ describe('derived atoms', () => {
     expect(derived().cityName).toBe('Praha');
     expect(derived({ city: 'Praha' }).cityName).toBe('Praha');
     expect(derived({ city: '' }).cityName).toBe('');
+  });
+
+  it('takes the initial of a middle name, and nothing from an empty one', () => {
+    expect(derived().middleInitial).toBe('S');
+    expect(derived({ middleName: '' }).middleInitial).toBe('');
+    expect(derived({ middleName: '  serik ' }).middleInitial).toBe('S');
+  });
+
+  /**
+   * The rule the "Preferred Name got the surname" incident is about, written as
+   * a test: there is no derivation from the given name to the preferred one, in
+   * either direction, and an unfilled entry stays unfilled.
+   */
+  it('never fills a preferred name from the given name', () => {
+    expect(Object.keys(derived())).not.toContain('preferredName');
+    expect(resolveTemplate('{preferredName}', ctxOf({ preferredName: '' }))).toBe('');
+    expect(resolveTemplate('{preferredName}', ctxOf())).toBe('Dee');
+  });
+
+  it('closes up a postcode written with a space', () => {
+    expect(derived().postalCodeCompact).toBe('10000');
+    expect(derived({ postalCode: 'SW1A 1AA' }).postalCodeCompact).toBe('SW1A1AA');
+    expect(derived({ postalCode: '' }).postalCodeCompact).toBe('');
+  });
+
+  it('reads a country as both a name and a code, whichever was written', () => {
+    expect(derived()).toMatchObject({ countryName: 'Czechia', countryCode: 'CZ' });
+    expect(derived({ country: 'CZ' })).toMatchObject({ countryName: 'Czechia', countryCode: 'CZ' });
+    expect(derived({ country: 'cz' })).toMatchObject({ countryName: 'Czechia', countryCode: 'CZ' });
+    // Aliases, diacritics and spacing are all the same country.
+    expect(derived({ country: 'Czech Republic' }).countryCode).toBe('CZ');
+    expect(derived({ country: 'Česká republika' }).countryCode).toBe('CZ');
+    expect(derived({ country: '  united  kingdom ' })).toMatchObject({
+      countryName: 'United Kingdom',
+      countryCode: 'GB',
+    });
+    expect(derived({ country: 'USA' }).countryName).toBe('United States');
+  });
+
+  /** An unlisted country is still a country — but it is not given a code. */
+  it('leaves an unlisted country as written and invents no code for it', () => {
+    expect(derived({ country: 'Wakanda' })).toMatchObject({
+      countryName: 'Wakanda',
+      countryCode: '',
+    });
+    // A bare two-letter token in a country box *is* a code, so it is kept as
+    // one — but it is not expanded into a name we do not have.
+    expect(derived({ country: 'xy' })).toMatchObject({ countryName: '', countryCode: 'XY' });
+    expect(derived({ country: '' })).toMatchObject({ countryName: '', countryCode: '' });
+  });
+
+  it('spells a date of birth every way a form asks for it', () => {
+    expect(derived()).toMatchObject({
+      dobIso: '1990-03-15',
+      dobDotted: '15.03.1990',
+      dobDay: '15',
+      dobMonth: '03',
+      dobYear: '1990',
+    });
+    // A hand-edited or imported profile may hold the Czech spelling instead.
+    expect(derived({ dateOfBirth: '5.3.1990' })).toMatchObject({
+      dobIso: '1990-03-05',
+      dobDotted: '05.03.1990',
+      dobDay: '05',
+    });
+    expect(derived({ dateOfBirth: '15/03/1990' }).dobIso).toBe('1990-03-15');
+  });
+
+  /**
+   * A date of birth that is only probably right is a wrong date of birth: the
+   * ambiguous and the impossible both derive nothing rather than a plausible
+   * reading.
+   */
+  it('derives nothing from a date it cannot read for certain', () => {
+    for (const dateOfBirth of ['', '1990', '15.03.90', '03/15/1990', '1990-13-01', '1990-02-30', 'yesterday']) {
+      expect(derived({ dateOfBirth })).toMatchObject({
+        dobIso: '',
+        dobDotted: '',
+        dobDay: '',
+        dobMonth: '',
+        dobYear: '',
+      });
+    }
+    // …and a leap day that does exist is not thrown away with them.
+    expect(derived({ dateOfBirth: '1992-02-29' }).dobDotted).toBe('29.02.1992');
+  });
+
+  it('takes the number of years out of however they were written', () => {
+    expect(derived().experienceYears).toBe('5');
+    expect(derived({ yearsOfExperience: '5 years' }).experienceYears).toBe('5');
+    expect(derived({ yearsOfExperience: 'over 10' }).experienceYears).toBe('10');
+    expect(derived({ yearsOfExperience: '' }).experienceYears).toBe('');
+    expect(derived({ yearsOfExperience: 'several' }).experienceYears).toBe('');
   });
 
   it('takes the number out of a written amount', () => {
@@ -368,7 +486,7 @@ describe('resolveTemplate', () => {
       '',
     );
     expect(resolveTemplate('+420 {phoneNational}', ctxOf({ phone: '' }))).toBe('');
-    expect(resolveTemplate('{city}, {country}', ctxOf())).toBe('');
+    expect(resolveTemplate('{city}, {country}', ctxOf({ city: '', country: '' }))).toBe('');
   });
 
   it('a template with no placeholders is literal text and survives', () => {
@@ -410,9 +528,35 @@ describe('the placeholder vocabulary', () => {
     expect(TEMPLATE_VALUE_KEYS).toHaveLength(PROFILE_VALUE_KEYS.length + DERIVED_VALUE_KEYS.length);
   });
 
+  /**
+   * The list the model is shown has to *be* the profile. A profile entry with
+   * no name in it is an answer the extension holds and never offers; a name
+   * with no entry behind it is an atom the model can compose from and the page
+   * cannot resolve. The second is how "Preferred Name" came to be answered with
+   * a surname, so both directions are checked here rather than by inspection.
+   */
+  it('offers exactly one name per profile entry', () => {
+    const stored = Object.keys(createEmptyProfile())
+      .filter((key) => key !== 'id' && key !== 'label')
+      // The one deliberate rename: the settings box is a salary *expectation*,
+      // the placeholder a form would ask for is `{salary}`.
+      .map((key) => (key === 'salaryExpectation' ? 'salary' : key));
+    const offered = PROFILE_VALUE_KEYS.filter((key) => key !== 'coverLetter');
+
+    expect([...offered].sort()).toEqual(stored.sort());
+  });
+
+  /** Every offered name is also a field type the filler knows how to answer. */
+  it('resolves each of them as a field type too', () => {
+    for (const key of PROFILE_VALUE_KEYS) {
+      expect(DEFAULT_TEMPLATES[key]).toBeDefined();
+      expect(resolveFieldType(key, ctxOf({}, 'a letter'))).not.toBe('');
+    }
+  });
+
   it('every default template is made of names that exist', () => {
     for (const template of Object.values(DEFAULT_TEMPLATES)) {
-      for (const [, name] of template.matchAll(/\{([a-zA-Z]+)\}/g)) {
+      for (const [, name] of template.matchAll(/\{([a-zA-Z][a-zA-Z0-9]*)\}/g)) {
         expect(isTemplateValueKey(name)).toBe(true);
       }
     }
@@ -421,7 +565,7 @@ describe('the placeholder vocabulary', () => {
   it('every variant template is made of names that exist', () => {
     for (const variants of Object.values(VARIANTS)) {
       for (const variant of variants) {
-        for (const [, name] of variant.template.matchAll(/\{([a-zA-Z]+)\}/g)) {
+        for (const [, name] of variant.template.matchAll(/\{([a-zA-Z][a-zA-Z0-9]*)\}/g)) {
           expect(isTemplateValueKey(name)).toBe(true);
         }
       }
@@ -646,6 +790,103 @@ const CASES: Array<{
     template: '{city}',
     value: 'Praha, Czechia',
   },
+  // ── The Workday-shaped fields the profile could not answer before ──
+  {
+    what: 'Legal Middle Name — the box that used to receive the given name',
+    fieldType: 'middleName',
+    html: '<label for="f">Legal Middle Name</label><input id="f" name="middleName" />',
+    template: '{middleName}',
+    value: 'Serik',
+  },
+  {
+    what: 'Preferred Name — the box that used to receive the surname',
+    fieldType: 'preferredName',
+    html: '<label for="f">Preferred Name</label><input id="f" name="preferredName" />',
+    template: '{preferredName}',
+    value: 'Dee',
+  },
+  {
+    what: 'Preferred Name of a profile that did not fill one in — still empty',
+    fieldType: 'preferredName',
+    html: '<label for="f">Preferred Name</label><input id="f" name="preferredName" />',
+    template: '{preferredName}',
+    value: '',
+    profile: { preferredName: '' },
+  },
+  {
+    what: 'Suffix',
+    fieldType: 'nameSuffix',
+    html: '<label for="f">Suffix</label><input id="f" name="suffix" />',
+    template: '{nameSuffix}',
+    value: 'Jr.',
+  },
+  // ── Address ──
+  {
+    what: 'Address Line 1',
+    fieldType: 'addressLine1',
+    html: '<label for="f">Address Line 1</label><input id="f" name="addressLine1" />',
+    template: '{addressLine1}',
+    value: 'Vinohradská 1511/230',
+  },
+  {
+    what: 'State / Province / County',
+    fieldType: 'state',
+    html: '<label for="f">State / Province / County</label><input id="f" name="state" />',
+    template: '{state}',
+    value: 'Hlavní město Praha',
+  },
+  {
+    what: 'PSČ — the stored "100 00" without the space a validator rejects',
+    fieldType: 'postalCode',
+    html: '<label for="f">PSČ</label><input id="f" name="psc" pattern="[0-9]{5}" />',
+    template: '{postalCodeCompact}',
+    value: '10000',
+  },
+  {
+    what: 'Country — the full name, however it was written down',
+    fieldType: 'country',
+    html: '<label for="f">Country</label><input id="f" name="country" />',
+    template: '{countryName}',
+    value: 'Czechia',
+    profile: { country: 'CZ' },
+  },
+  // ── Background ──
+  {
+    what: 'Date of birth — ISO, the one spelling a date input accepts',
+    fieldType: 'dateOfBirth',
+    html: '<label for="f">Date of birth</label><input id="f" name="dob" type="date" />',
+    template: '{dobIso}',
+    value: '1990-03-15',
+  },
+  {
+    what: 'Highest level of education',
+    fieldType: 'education',
+    html: '<label for="f">Highest level of education</label><input id="f" name="education" />',
+    template: '{education}',
+    value: "Master's degree",
+  },
+  {
+    what: 'Řidičský průkaz',
+    fieldType: 'drivingLicence',
+    html: '<label for="f">Řidičský průkaz</label><input id="f" name="ridicsky_prukaz" />',
+    template: '{drivingLicence}',
+    value: 'B',
+  },
+  // ── Work ──
+  {
+    what: 'Current employer',
+    fieldType: 'currentEmployer',
+    html: '<label for="f">Current employer</label><input id="f" name="employer" />',
+    template: '{currentEmployer}',
+    value: 'Acme s.r.o.',
+  },
+  {
+    what: 'Years of experience — as written, "5+" and all',
+    fieldType: 'yearsOfExperience',
+    html: '<label for="f">Years of experience</label><input id="f" name="experience" />',
+    template: '{yearsOfExperience}',
+    value: '5+',
+  },
   // ── Salary ──
   {
     what: 'Salary as text — currency and all',
@@ -765,5 +1006,68 @@ describe('resolveAnswer', () => {
   it('writes nothing for an answer that is neither', () => {
     expect(resolveAnswer('maidenName', ctxOf())).toBe('');
     expect(resolveAnswer('{maidenName}', ctxOf())).toBe('');
+  });
+});
+
+describe('spellings for the fields added in schema v2', () => {
+  const p = createEmptyProfile({
+    country: 'Czechia',
+    dateOfBirth: '1998-03-15',
+    yearsOfExperience: '5 years',
+  });
+  const ask = (type: string, html: string) => {
+    document.body.innerHTML = html;
+    const el = document.querySelector('input') as HTMLInputElement;
+    return resolveAnswer(type, { profile: p }, describeField(buildFingerprint(el)));
+  };
+
+  it('gives a country box the name and a code box the code', () => {
+    expect(ask('country', '<label for="x">Country</label><input id="x">')).toBe('Czechia');
+    expect(ask('country', '<label for="x">Country code</label><input id="x" maxlength="2">')).toBe('CZ');
+  });
+
+  it('does not invent a code for a country the table does not list', () => {
+    document.body.innerHTML = '<label for="x">Country code</label><input id="x" maxlength="2">';
+    const el = document.querySelector('input') as HTMLInputElement;
+    const unknown = createEmptyProfile({ country: 'Wakanda' });
+    expect(resolveAnswer('country', { profile: unknown }, describeField(buildFingerprint(el)))).toBe('');
+  });
+
+  it('reads a dd.mm.rrrr placeholder as one whole date, not as a day box', () => {
+    // The demonstration contains the literal `dd`, which answered the entire
+    // field with "15" until the full-date check was moved ahead of the split ones.
+    expect(ask('dateOfBirth', '<label for="x">Datum narození</label><input id="x" placeholder="dd.mm.rrrr">'))
+      .toBe('15.03.1998');
+  });
+
+  it('answers each box of a split date with its own component', () => {
+    expect(ask('dateOfBirth', '<label for="x">Day</label><input id="x">')).toBe('15');
+    expect(ask('dateOfBirth', '<label for="x">Month</label><input id="x">')).toBe('03');
+    expect(ask('dateOfBirth', '<label for="x">Year</label><input id="x" maxlength="4">')).toBe('1998');
+  });
+
+  it('keeps the canonical spelling for a native date control', () => {
+    expect(ask('dateOfBirth', '<label for="x">Date of birth</label><input id="x" type="date">'))
+      .toBe('1998-03-15');
+  });
+
+  it('reads a format spelled out in the label, not only in the placeholder', () => {
+    // "Datum narození (dd.mm.rrrr)" states the format in the label itself.
+    expect(ask('dateOfBirth', '<label for="x">Datum narození (dd.mm.rrrr)</label><input id="x">'))
+      .toBe('15.03.1998');
+  });
+
+  it('takes a country code from the wording alone, with no length limit to help', () => {
+    expect(ask('country', '<label for="x">ISO code</label><input id="x">')).toBe('CZ');
+  });
+
+  it('treats a four-digit pattern as a year box even when nothing is labelled', () => {
+    expect(ask('dateOfBirth', '<label for="x">Narození</label><input id="x" pattern="[0-9]{4}">'))
+      .toBe('1998');
+  });
+
+  it('strips the unit from years of experience only where a number is required', () => {
+    expect(ask('yearsOfExperience', '<label for="x">Years of experience</label><input id="x" type="number">')).toBe('5');
+    expect(ask('yearsOfExperience', '<label for="x">Years of experience</label><input id="x">')).toBe('5 years');
   });
 });

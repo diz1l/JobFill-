@@ -10,18 +10,40 @@
  * `phoneNational` of an empty phone is `''`, not a plausible number. That is the
  * difference between composing and inventing, and it is what makes the template
  * layer safe to point at a form an employer reads.
+ *
+ * ── What is deliberately *not* derived ───────────────────────────────────────
+ * Most profile entries have exactly one spelling, and inventing a second is the
+ * failure mode this module exists to avoid:
+ *
+ *   `preferredName`  is not `firstName`. An empty "goes by" is not evidence that
+ *                    the given name is the preferred one — and filling it from
+ *                    the given name is the exact guess that put a surname in a
+ *                    "Preferred Name" box during the first live run.
+ *   `education`      has no re-spelling. "Master's degree" → "MSc" → "VŠ" are
+ *                    claims about equivalence between education systems, not
+ *                    about typography; the settings page offers one closed
+ *                    ladder so the stored string is already the canonical one.
+ *   `nationality`,   are single facts with no second form: "Czech" is not
+ *   `state`,         "Czechia", a `kraj` has no code, and abbreviating a licence
+ *   `drivingLicence` category or a language would be a translation, not a
+ *   `preferredLanguage`  spelling.
  */
 
 /** The profile fields the derivations are computed from. */
 export interface SourceAtoms {
   firstName: string;
+  middleName: string;
   lastName: string;
   phone: string;
   city: string;
+  postalCode: string;
+  country: string;
   linkedin: string;
   github: string;
   website: string;
   salary: string;
+  dateOfBirth: string;
+  yearsOfExperience: string;
 }
 
 /**
@@ -37,6 +59,8 @@ export const DERIVED_VALUE_KEYS = [
   'familyName',
   'firstInitial',
   'lastInitial',
+  /** `M` — for the "Middle initial" box, which is usually `maxlength="1"`. */
+  'middleInitial',
   /** `+420` — for forms with a separate dial-code field. */
   'phoneCountryCode',
   /** `123456789` — the subscriber number, no country code. */
@@ -55,6 +79,22 @@ export const DERIVED_VALUE_KEYS = [
   'websiteHost',
   /** `Praha` out of a stored "Praha, Czechia". */
   'cityName',
+  /** `16000` out of "160 00" — a postcode box that validates rejects the space. */
+  'postalCodeCompact',
+  /** `Czechia` — the full name, however the country was written down. */
+  'countryName',
+  /** `CZ` — ISO-3166 alpha-2, for a country box that wants the code. */
+  'countryCode',
+  /** `1990-03-15` — the canonical spelling `<input type="date">` insists on. */
+  'dobIso',
+  /** `15.03.1990` — how a Czech form writes the same date. */
+  'dobDotted',
+  /** `15` / `03` / `1990` — for the forms that ask in three boxes. */
+  'dobDay',
+  'dobMonth',
+  'dobYear',
+  /** `5` out of "5+ years" — for `<input type="number">`. */
+  'experienceYears',
   /** `80000` out of "80 000 Kč" — for `<input type="number">`. */
   'salaryNumber',
 ] as const;
@@ -209,6 +249,145 @@ function hostOf(value: string): string {
     .replace(/[/?#].*$/, '');
 }
 
+// ─── Country ─────────────────────────────────────────────────────────────────
+
+/**
+ * ISO-3166 alpha-2 for the countries this extension is realistically used from
+ * and applied to, with the aliases people actually type.
+ *
+ * `CODE:Canonical name:alias:alias|…` — an alias is another *spelling of the
+ * same country*, never a country that merely overlaps one, which is why
+ * "England" is absent and "Great Britain" is present.
+ *
+ * Not the full 249 entries, for the same reason `DIAL_CODES` is not: an
+ * unlisted country simply derives no code, and `{country}` still fills in
+ * whatever the user wrote. Expanding `CZ` into `Czechia` is a re-spelling of a
+ * fact the profile already states; producing `KZ` from a name that is not in
+ * this table would be a guess, and this module does not guess.
+ */
+const COUNTRY_TABLE =
+  'CZ:Czechia:czech republic:cesko:ceska republika|SK:Slovakia:slovensko|' +
+  'AT:Austria:osterreich|DE:Germany:deutschland:nemecko|PL:Poland:polska|' +
+  'HU:Hungary:magyarorszag|SI:Slovenia|HR:Croatia|RO:Romania|BG:Bulgaria|' +
+  'GR:Greece|IT:Italy:italia|ES:Spain:espana|PT:Portugal|FR:France|' +
+  'BE:Belgium|NL:Netherlands:the netherlands:holland|LU:Luxembourg|' +
+  'IE:Ireland|GB:United Kingdom:uk:great britain:britain|' +
+  'DK:Denmark|SE:Sweden:sverige|NO:Norway|FI:Finland|IS:Iceland|' +
+  'EE:Estonia|LV:Latvia|LT:Lithuania|CH:Switzerland|LI:Liechtenstein|' +
+  'MT:Malta|CY:Cyprus|UA:Ukraine|MD:Moldova|BY:Belarus|RS:Serbia|' +
+  'BA:Bosnia and Herzegovina|ME:Montenegro|MK:North Macedonia|AL:Albania|' +
+  'TR:Turkey:turkiye|RU:Russia|GE:Georgia|AM:Armenia|AZ:Azerbaijan|' +
+  'KZ:Kazakhstan|UZ:Uzbekistan|KG:Kyrgyzstan|' +
+  'US:United States:usa:united states of america|CA:Canada|MX:Mexico|' +
+  'BR:Brazil|AR:Argentina|AU:Australia|NZ:New Zealand|' +
+  'IN:India|CN:China|JP:Japan|KR:South Korea|SG:Singapore|MY:Malaysia|' +
+  'ID:Indonesia|TH:Thailand|VN:Vietnam|PH:Philippines|PK:Pakistan|' +
+  'BD:Bangladesh|LK:Sri Lanka|NP:Nepal|IL:Israel|AE:United Arab Emirates:uae|' +
+  'SA:Saudi Arabia|EG:Egypt|ZA:South Africa|NG:Nigeria|KE:Kenya|MA:Morocco';
+
+interface CountryParts {
+  name: string;
+  code: string;
+}
+
+/** Every written form of a country — its code, its name, its aliases — keyed. */
+const COUNTRIES = new Map<string, CountryParts>();
+
+for (const row of COUNTRY_TABLE.split('|')) {
+  const [code, name, ...aliases] = row.split(':');
+  for (const written of [code, name, ...aliases]) COUNTRIES.set(foldCase(written), { name, code });
+}
+
+/** Lower case, no diacritics, single spaces — how a written country is keyed. */
+function foldCase(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * The country as a full name and as a code.
+ *
+ * A written form that is not in the table is *not* an error: the name comes back
+ * as typed (it is already a name), and the code comes back empty rather than
+ * abbreviated by guesswork. A bare two-letter token is read as a code — that is
+ * what it is, in a box labelled "Country" — and is upper-cased rather than
+ * expanded when the table does not know it.
+ */
+function splitCountry(country: string): CountryParts {
+  const raw = country.trim().replace(/\s+/g, ' ');
+  if (!raw) return { name: '', code: '' };
+
+  const folded = foldCase(raw);
+  const known = COUNTRIES.get(folded);
+  if (known) return known;
+
+  // Two letters in a box labelled "Country" are a code, whether or not the
+  // table has heard of it — but they are not a name we can write out.
+  if (/^[a-z]{2}$/.test(folded)) return { name: '', code: folded.toUpperCase() };
+
+  return { name: raw, code: '' };
+}
+
+// ─── Date of birth ───────────────────────────────────────────────────────────
+
+/** `1990-03-15` — what `<input type="date">` in settings stores. */
+const ISO_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})$/;
+/** `15.03.1990`, `15/03/1990` — what an imported or hand-edited profile may hold. */
+const WRITTEN_DATE = /^(\d{1,2})[./](\d{1,2})[./](\d{4})$/;
+
+interface DateParts {
+  iso: string;
+  dotted: string;
+  day: string;
+  month: string;
+  year: string;
+}
+
+const NO_DATE: DateParts = { iso: '', dotted: '', day: '', month: '', year: '' };
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * A date of birth in the spellings forms ask for, or nothing at all.
+ *
+ * Nothing at all is the answer for anything that is not unambiguously a date:
+ * a half-typed value, a two-digit year, `03/15/1990` written the American way
+ * round. Reading `03/15` as the fifteenth of March is only *probably* right, and
+ * a date of birth that is probably right is a wrong date of birth on an
+ * application form. Day and month are zero-padded, so the three-box spelling
+ * matches the two full ones and satisfies a `pattern="[0-9]{2}"`.
+ */
+function splitDate(value: string): DateParts {
+  const raw = value.trim();
+  if (!raw) return NO_DATE;
+
+  const iso = ISO_DATE.exec(raw);
+  const written = WRITTEN_DATE.exec(raw);
+  let y: string, m: string, d: string;
+  if (iso) [, y, m, d] = iso;
+  else if (written) [, d, m, y] = written;
+  else return NO_DATE;
+
+  const day = Number(d);
+  const month = Number(m);
+  const year = Number(y);
+  // A day the calendar does not have is a typo, not a fact to re-spell.
+  if (month < 1 || month > 12) return NO_DATE;
+  if (day < 1 || day > new Date(year, month, 0).getDate()) return NO_DATE;
+
+  return {
+    iso: `${y}-${pad(month)}-${pad(day)}`,
+    dotted: `${pad(day)}.${pad(month)}.${y}`,
+    day: pad(day),
+    month: pad(month),
+    year: y,
+  };
+}
+
 // ─── Money ───────────────────────────────────────────────────────────────────
 
 /**
@@ -239,12 +418,15 @@ export function deriveAtoms(src: SourceAtoms): Record<DerivedValueKey, string> {
   const phone = splitPhone(src.phone);
   const city = src.city.trim();
   const comma = city.indexOf(',');
+  const country = splitCountry(src.country);
+  const dob = splitDate(src.dateOfBirth);
 
   return {
     givenName,
     familyName,
     firstInitial: initialOf(givenName),
     lastInitial: initialOf(familyName),
+    middleInitial: initialOf(src.middleName.trim()),
     phoneCountryCode: phone.countryCode,
     phoneNational: phone.national,
     phoneDigits: phone.digits,
@@ -256,6 +438,15 @@ export function deriveAtoms(src: SourceAtoms): Record<DerivedValueKey, string> {
     websiteUrl: toUrl(src.website, ''),
     websiteHost: hostOf(src.website),
     cityName: comma === -1 ? city : city.slice(0, comma).trim(),
+    postalCodeCompact: src.postalCode.replace(/\s+/g, ''),
+    countryName: country.name,
+    countryCode: country.code,
+    dobIso: dob.iso,
+    dobDotted: dob.dotted,
+    dobDay: dob.day,
+    dobMonth: dob.month,
+    dobYear: dob.year,
+    experienceYears: numberOf(src.yearsOfExperience),
     salaryNumber: numberOf(src.salary),
   };
 }

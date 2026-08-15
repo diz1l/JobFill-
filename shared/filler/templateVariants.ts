@@ -55,6 +55,40 @@ const GIVEN =
 
 const INITIALS = /(?<![a-z])(?:initials?|inicial\w*)(?![a-z])/;
 
+/** A country box asking for the ISO code rather than the name. */
+const COUNTRY_CODE_WORD =
+  /(?<![a-z])(?:(?:country|iso)[\s._-]?code|kod[\s._-]?zeme|zkratka[\s._-]?zeme)(?![a-z])/;
+
+/** One box of a split date. Ordered day/month/year so the tests read that way. */
+const DAY_BOX = /(?<![a-z])(?:day|dd|den)(?![a-z])/;
+const MONTH_BOX = /(?<![a-z])(?:month|mm|mesic)(?![a-z])/;
+const YEAR_BOX = /(?<![a-z])(?:year|yyyy|yy|rok)(?![a-z])/;
+
+/** `15.03.1990` — the Czech spelling, and never what `type="date"` wants. */
+const DOTTED_DATE = /(?:dd|d)\s*\.\s*(?:mm|m)\s*\.\s*(?:yyyy|rrrr|yy)/;
+
+/** A four-digit box is a year box whatever its label says. */
+function isYearBox(shape: FieldShape): boolean {
+  return shape.maxLength === 4 || patternDigitLimit(shape.pattern) === 4;
+}
+
+/**
+ * The field shows what a *whole* date should look like — `dd.mm.rrrr` as a
+ * placeholder, or a label spelling the format out. Such a field wants one value,
+ * not one component, even though the demonstration contains the word `dd`.
+ */
+function demonstratesFullDate(shape: FieldShape): boolean {
+  return DOTTED_DATE.test(shape.placeholder) || says(shape, DOTTED_DATE);
+}
+
+/**
+ * One box of a split date — and only that. A format demonstration mentions every
+ * component, so it can never select one of them.
+ */
+function isSplitBox(shape: FieldShape, part: RegExp): boolean {
+  return !demonstratesFullDate(shape) && says(shape, part);
+}
+
 const COUNTRY_CODE =
   /(?<![a-z])(?:(?:country|dial|calling)[\s._-]?code|predvolb\w*|telefonni[\s._-]?predcisli\w*)(?![a-z])/;
 const WITHOUT_COUNTRY_CODE =
@@ -195,4 +229,49 @@ export const VARIANTS: Record<string, TemplateVariant[]> = {
 
   /** `<input type="number">` discards "80 000 Kč" outright and stays empty. */
   salary: [{ id: 'salary.number', template: '{salaryNumber}', when: isNumericControl }],
+
+  /**
+   * A country box wants either the name or the two-letter code, and says which.
+   * `atoms.ts` derives one from the other only for countries it knows: an
+   * unlisted country keeps whatever the profile holds and gets no invented code,
+   * so this variant resolves to nothing rather than to a guess.
+   */
+  country: [
+    {
+      id: 'country.code',
+      template: '{countryCode}',
+      when: (s) => says(s, COUNTRY_CODE_WORD) || (s.maxLength > 0 && s.maxLength <= 3),
+    },
+    { id: 'country.name', template: '{countryName}' },
+  ],
+
+  /**
+   * The profile stores a date input's canonical `yyyy-mm-dd`. Forms ask in three
+   * shapes, and only the split one needs a signal — a single box is served by
+   * whichever spelling its own attributes describe.
+   */
+  dateOfBirth: [
+    // Checked before the single-box spellings, because a box that demonstrates
+    // `dd.mm.rrrr` contains the literal `dd` — and read as a day box it answered
+    // a whole date field with "15".
+    {
+      id: 'dob.dotted',
+      template: '{dobDotted}',
+      // A Czech form writes 15.03.1990; `type="date"` never wants that spelling.
+      when: (s) => s.controlType !== 'date' && demonstratesFullDate(s),
+    },
+    { id: 'dob.day', template: '{dobDay}', when: (s) => isSplitBox(s, DAY_BOX) },
+    { id: 'dob.month', template: '{dobMonth}', when: (s) => isSplitBox(s, MONTH_BOX) },
+    {
+      id: 'dob.year',
+      template: '{dobYear}',
+      when: (s) => isSplitBox(s, YEAR_BOX) || (isYearBox(s) && !demonstratesFullDate(s)),
+    },
+    { id: 'dob.iso', template: '{dobIso}' },
+  ],
+
+  /** "5 years" is stored; a number box takes the 5 and drops the rest. */
+  yearsOfExperience: [
+    { id: 'experience.number', template: '{experienceYears}', when: isNumericControl },
+  ],
 };

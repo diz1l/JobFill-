@@ -28,9 +28,20 @@
  */
 
 import { isProfileValueKey, PROFILE_VALUE_KEYS, type ValueTemplate } from '../filler/valueTemplate';
+import { isDeclarationField } from '../filler/questionPolicy';
 
-/** Same shape `resolveTemplate` substitutes, so the two can never disagree. */
-const PLACEHOLDER = /\{([a-zA-Z]+)\}/g;
+/**
+ * Same shape `resolveTemplate` substitutes, so the two can never disagree — a
+ * letter, then letters or digits.
+ *
+ * The digits are not cosmetic: `addressLine1` / `addressLine2` are how every ATS
+ * spells those two boxes, and a letters-only grammar silently dropped every
+ * template naming them — a fail-closed refusal, so nothing was ever written
+ * wrongly, but the two fields were unreachable. The mandatory leading letter is
+ * what keeps that safe: `{1990}` is still not a placeholder, so it stays literal
+ * text and {@link SAFE_LITERAL} refuses it.
+ */
+const PLACEHOLDER = /\{([a-zA-Z][a-zA-Z0-9]*)\}/g;
 
 /**
  * How many atoms one field may be built from. Real compositions are two ("first
@@ -85,6 +96,19 @@ const LEGACY_TYPE_TEMPLATES: Readonly<Record<string, ValueTemplate>> = {
 export type RefusalReason =
   /** Consent, agreement, opt-in — which the extension never fills anywhere. */
   | 'consent'
+  /**
+   * A statement about the applicant that no stored value can make: a criminal
+   * record, military service, a disability, a protected characteristic, or a
+   * confirmation that something is true. Enumerated in
+   * `shared/filler/questionPolicy.ts`, which the dropdown path shares.
+   *
+   * Distinct from the reasons around it because those describe fields whose
+   * *subject* is wrong (the employer, a referee, a bank). These are fields
+   * addressed to the applicant, where the answer would be a declaration, and
+   * where a template naming a real profile atom — `{workPermit}` in "Have you
+   * ever been convicted?" — is precisely the failure to prevent.
+   */
+  | 'declaration'
   /** About the employer / posting / recruiter, not about the applicant. */
   | 'employer'
   /** About a third party: reference, emergency contact, guardian, spouse. */
@@ -143,7 +167,7 @@ export function refusalReason(fingerprint: string): RefusalReason | null {
   for (const rule of REFUSAL_RULES) {
     if (rule.pattern.test(fingerprint)) return rule.reason;
   }
-  return null;
+  return isDeclarationField(fingerprint) ? 'declaration' : null;
 }
 
 /**
@@ -289,7 +313,8 @@ Answer "" — say nothing — when:
   - the field is about the employer, the job posting or the recruiter;
   - the field is about anyone other than the applicant: a reference, a referee, an emergency contact, a next of kin, a guardian, a spouse;
   - the field asks for money, bank, tax or insurance details;
-  - the field asks for a date of birth, an age, a passport, a national ID or any other identity document.
+  - the field asks for a date of birth, an age, a passport, a national ID or any other identity document;
+  - the field asks the applicant to state something about themselves that only they can state: a criminal record, military service, a disability, their race, gender, religion or any other protected characteristic, or a confirmation that something is true, accurate or complete.
 "" is always a correct answer. A wrong value in an application form costs the applicant the application; an empty field costs them a few seconds.
 
 Respond with a JSON object only: field index (as a string) to template. Include every index.`;

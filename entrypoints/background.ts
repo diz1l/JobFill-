@@ -2,6 +2,7 @@ import { defineBackground } from 'wxt/utils/define-background';
 import {
   generateMotivation,
   planFieldTemplates,
+  chooseSelectOptions,
   answerOpenQuestions,
   listModels,
   probeModel,
@@ -44,6 +45,7 @@ import {
   type FromBackgroundMessage,
   type GroqCheckReport,
   type OpenQuestion,
+  type SelectQuestion,
   type ToBackgroundMessage,
 } from '../shared/messages';
 import { createApplicationEntry } from '../shared/types';
@@ -78,6 +80,10 @@ export default defineBackground(() => {
 
       case 'CLASSIFY_FIELDS':
         run(handleClassifyFields(message.fingerprints), respond, () => NO_TEMPLATES);
+        return true;
+
+      case 'CHOOSE_OPTIONS':
+        run(handleChooseOptions(message.selects), respond, () => NO_CHOICES);
         return true;
 
       case 'INSPECT_NOTION':
@@ -356,6 +362,38 @@ async function handleClassifyFields(fingerprints: string[]): Promise<FromBackgro
     return { type: 'CLASSIFY_RESULT', templates: await planFieldTemplates(fingerprints, endpoint) };
   } catch {
     return NO_TEMPLATES;
+  }
+}
+
+const NO_CHOICES: BackgroundResponse<'OPTION_CHOICE_RESULT'> = {
+  type: 'OPTION_CHOICE_RESULT',
+  choices: {},
+};
+
+/**
+ * The dropdown half of the same optional pass, and the same rules apply: the
+ * opt-in is re-checked here because this is the context that owns the key and
+ * makes the request, and every failure is an empty answer rather than an error.
+ *
+ * One difference is worth naming. Unlike `CLASSIFY_FIELDS`, this message carries
+ * text taken from the page — the labels of a dropdown's own options. The worker
+ * neither stores nor forwards it anywhere else; it goes into one request to the
+ * provider the user configured, and what comes back is an index. Which
+ * dropdowns may be asked about at all is decided by
+ * `shared/filler/questionPolicy.ts`, applied in the page when the batch is built
+ * and again in `chooseSelectOptions` before the request is sent.
+ */
+async function handleChooseOptions(selects: SelectQuestion[]): Promise<FromBackgroundMessage> {
+  const { llmFieldClassification } = await getSettings();
+  if (!llmFieldClassification || selects.length === 0) return NO_CHOICES;
+
+  const endpoint = await getLlmEndpoint();
+  if (!endpoint.apiKey) return NO_CHOICES;
+
+  try {
+    return { type: 'OPTION_CHOICE_RESULT', choices: await chooseSelectOptions(selects, endpoint) };
+  } catch {
+    return NO_CHOICES;
   }
 }
 

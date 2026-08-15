@@ -26,12 +26,14 @@ import { removeAllHighlights, highlightField } from '../shared/filler/highlight'
 import { describeMissingData } from '../shared/filler/missingData';
 import { buildFingerprint, type FieldFingerprint } from '../shared/field-matcher/fingerprint';
 import { validateFieldTemplates } from '../shared/api/fieldTemplates';
+import { validateOptionChoices } from '../shared/api/optionChoice';
 import {
   FRAME_REPLY,
   type FrameReplyMessage,
   type FrameRequest,
   type FromBackgroundMessage,
   type OpenQuestion,
+  type SelectQuestion,
   type ToBackgroundMessage,
 } from '../shared/messages';
 import type { FillSummary, Profile } from '../shared/types';
@@ -432,6 +434,7 @@ async function runClassificationPass(
     const { filled } = await classifyUnresolvedFields(profile, candidates, {
       enabled: true,
       classify: requestClassification,
+      chooseOptions: requestOptionChoice,
       ...opts,
     });
     if (filled > 0) {
@@ -457,6 +460,36 @@ async function runClassificationPass(
  * template naming a non-existent atom, or one aimed at a consent box, cannot
  * reach the DOM even if everything upstream is wrong.
  */
+/**
+ * The dropdown half. `selects` is what `buildSelectBatch` allowed: a control's
+ * fingerprint and the labels of its own `<option>` elements — the fixed choices
+ * the site's author wrote, identical for every visitor — and nothing else from
+ * the page. Dropdowns about a protected topic, yes/no lists and lists the user
+ * has already answered never appear in it.
+ *
+ * The reply is re-validated here for the same reason as the template one: the
+ * worker already ran `validateOptionChoices` on the way out of the model, and
+ * this is the last place before an option is selected in somebody's job
+ * application. Same function, same batch, so a correct answer is unaffected.
+ */
+function requestOptionChoice(selects: SelectQuestion[]): Promise<Record<string, number> | undefined> {
+  const message: ToBackgroundMessage = { type: 'CHOOSE_OPTIONS', selects };
+
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response: FromBackgroundMessage | undefined) => {
+        if (chrome.runtime.lastError || response?.type !== 'OPTION_CHOICE_RESULT') {
+          resolve(undefined);
+          return;
+        }
+        resolve(validateOptionChoices(response.choices, selects));
+      });
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
 function requestClassification(fingerprints: string[]): Promise<Record<string, string> | undefined> {
   const message: ToBackgroundMessage = { type: 'CLASSIFY_FIELDS', fingerprints };
 

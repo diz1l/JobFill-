@@ -74,6 +74,16 @@ export type ToBackgroundMessage =
    */
   | { type: 'CLASSIFY_FIELDS'; fingerprints: string[] }
   /**
+   * Ask which of a dropdown's *own* options answers it. The second half of the
+   * same opt-in as `CLASSIFY_FIELDS`, and the only message in this contract that
+   * carries anything read out of the page body — see {@link SelectQuestion} for
+   * exactly what that is and what it excludes.
+   *
+   * The answer is an index, never text (`OPTION_CHOICE_RESULT`), so the model
+   * can point at an option the page already offers and can do nothing else.
+   */
+  | { type: 'CHOOSE_OPTIONS'; selects: SelectQuestion[] }
+  /**
    * Read a Notion database's schema so Settings can tell the user which properties
    * are missing *before* an application fails to log. Routed through the worker
    * rather than called from the options page for two reasons: the worker is the
@@ -120,6 +130,57 @@ export type ToBackgroundMessage =
  * when it builds the batch, and `shared/api/groq.ts` at the egress point.
  */
 export const MAX_CLASSIFY_FIELDS = 40;
+
+// ─── Dropdowns the AI pass may be asked about ─────────────────────────────────
+
+/**
+ * One `<select>` put to the model: how the control identifies itself, and the
+ * choices it offers.
+ *
+ * `options` is the one place in this whole contract where text taken from the
+ * page body travels anywhere. It is worth stating precisely what that is and is
+ * not. It is the labels of a dropdown's own `<option>` elements — the fixed
+ * choices the site's author wrote, identical for every visitor. It is not the
+ * page's prose, not the job description, not any other control's contents, and
+ * not what the user has typed: an option the user has *chosen* is not sent
+ * either, because a select that is no longer untouched is never asked about.
+ * Placeholders ("Please Select") are stripped before sending — they are not
+ * answers.
+ *
+ * Whole categories of dropdown never reach this type at all. A question about
+ * age, work authorisation, a criminal record, military service, disability, a
+ * protected characteristic, consent, an attestation, or the applicant's
+ * qualifications is refused before the batch is built, as is every yes/no list
+ * — see `shared/filler/questionPolicy.ts`.
+ */
+export interface SelectQuestion {
+  /** `serializeFingerprint` output: the control's attributes and its label. */
+  fingerprint: string;
+  /** Selectable option labels, in page order, placeholders removed. */
+  options: string[];
+}
+
+/**
+ * Ceilings on one `CHOOSE_OPTIONS` request. Enforced where the batch is built
+ * *and* at the egress point, like {@link MAX_CLASSIFY_FIELDS}.
+ *
+ * They bound the request in the two ways that matter. Cost: a full batch is
+ * ≈ 1 k prompt tokens and answers in a few dozen, well inside the 15 s timeout.
+ * Egress: no more than {@link MAX_OPTION_PAYLOAD_CHARS} characters of page text
+ * can leave per fill, whatever the page contains — a figure a privacy policy can
+ * state and a reader can check.
+ *
+ * {@link MAX_SELECT_OPTIONS} and {@link MAX_OPTION_LABEL_CHARS} also decide
+ * *which* lists qualify — nothing is ever truncated to fit, because the reply is
+ * an index and an index into a shortened list points at the wrong option. A
+ * 250-entry country list is over the limit and is simply never sent, which costs
+ * nothing: long lists are exactly the ones the profile and the synonym tables
+ * answer without help.
+ */
+export const MAX_OPTION_SELECTS = 8;
+export const MAX_SELECT_OPTIONS = 20;
+export const MAX_OPTION_LABEL_CHARS = 60;
+export const MAX_OPTION_PAYLOAD_CHARS = 4000;
 
 // ─── Background → Any ────────────────────────────────────────────────────────
 
@@ -212,6 +273,16 @@ export type FromBackgroundMessage =
    * could ask for more.
    */
   | { type: 'CLASSIFY_RESULT'; templates: Record<string, string> }
+  /**
+   * The model's answer to `CHOOSE_OPTIONS`: `"<select index>" → option index`.
+   *
+   * An index into the options that were sent, and nothing else. The model cannot
+   * name an option that was not offered, cannot spell one differently, and — as
+   * with `CLASSIFY_RESULT` — has no field here through which to ask for more
+   * confidence than the amber `LLM_FIELD_CONFIDENCE` every such fill gets.
+   * Selects it declined to answer are simply absent.
+   */
+  | { type: 'OPTION_CHOICE_RESULT'; choices: Record<string, number> }
   | {
       type: 'LOG_RESULT';
       /** `true` when the entry reached the local `chrome.storage.local` journal. */

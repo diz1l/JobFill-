@@ -15,12 +15,18 @@ import {
 import { logToSheets, validateSheetsEndpoint } from '../shared/api/sheets';
 import {
   answerOpenQuestions,
+  chooseSelectOptions,
   listModels,
   planFieldTemplates,
   probeModel,
   generateMotivation,
   GroqApiError,
 } from '../shared/api/groq';
+import {
+  buildOptionChoicePrompt,
+  toOptionIndex,
+  validateOptionChoices,
+} from '../shared/api/optionChoice';
 import {
   refusalReason,
   toValueTemplate,
@@ -41,7 +47,13 @@ import {
 import { resolveTemplate } from '../shared/filler/valueTemplate';
 import { createApplicationEntry, createEmptyProfile, LLM_FIELD_CONFIDENCE } from '../shared/types';
 import type { LlmFieldConfidence } from '../shared/types';
-import { MAX_CLASSIFY_FIELDS, type FromBackgroundMessage } from '../shared/messages';
+import {
+  MAX_CLASSIFY_FIELDS,
+  MAX_OPTION_SELECTS,
+  MAX_SELECT_OPTIONS,
+  type FromBackgroundMessage,
+  type SelectQuestion,
+} from '../shared/messages';
 
 const groqEndpoint: LlmEndpoint = buildEndpoint({
   providerId: 'groq',
@@ -496,12 +508,27 @@ describe('value templates — the FR-5.3 answer contract', () => {
   });
 
   it('drops a template naming an atom that does not exist — whole, not partly', () => {
-    // `middleName` is not a profile atom. Filling in the parts that do exist
+    // `maidenName` is not a profile atom. Filling in the parts that do exist
     // would answer a different question than the one the field asked.
-    expect(validateFieldTemplates({ '0': '{firstName} {middleName}' }, plain)).toEqual({});
+    expect(validateFieldTemplates({ '0': '{firstName} {maidenName}' }, plain)).toEqual({});
     expect(toValueTemplate('{socialSecurityNumber}')).toBeNull();
     // Defence in depth: even if one got through, substitution refuses it too.
-    expect(resolveTemplate('{firstName} {middleName}', ctx)).toBe('');
+    expect(resolveTemplate('{firstName} {maidenName}', ctx)).toBe('');
+  });
+
+  /**
+   * The digits in `addressLine1` are the reason the placeholder grammar admits
+   * them at all. A letters-only pattern dropped both address lines whole — a
+   * safe failure, and a permanently unreachable one.
+   */
+  it('accepts the two placeholder names that carry a digit', () => {
+    expect(toValueTemplate('{addressLine1}')).toBe('{addressLine1}');
+    expect(validateFieldTemplates({ '0': '{addressLine2}' }, plain)).toEqual({
+      '0': '{addressLine2}',
+    });
+    // …without admitting a bare number, which is literal text however it is
+    // wrapped: no leading letter, so it is not a placeholder at all.
+    expect(toValueTemplate('{1990}')).toBeNull();
   });
 
   it('refuses literal text — the model may reference values, never write them', () => {
@@ -565,6 +592,36 @@ describe('fields the model is not allowed to answer', () => {
     expect(refusalReason(fingerprint)).not.toBeNull();
     expect(validateFieldTemplates({ '0': '{email}' }, [fingerprint])).toEqual({});
     expect(validateFieldTemplates({ '0': '{firstName} {lastName}' }, [fingerprint])).toEqual({});
+  });
+
+  /**
+   * The template path can only copy the applicant's own stored values, which is
+   * usually what makes it safe — and is exactly what makes these fields unsafe:
+   * `{workPermit}` resolves to "Yes", and "Yes" in "Have you ever been
+   * convicted?" is a statement the applicant never made.
+   */
+  it.each([
+    ['a criminal record', fp('Have you ever been convicted of a felony?', 'conviction')],
+    ['military service', fp('Are you a protected veteran?', 'veteran_status')],
+    ['a disability', fp('Do you have a disability?', 'disability_status')],
+    ['a protected characteristic', fp('Gender identity', 'gender')],
+    ['an attestation', fp('Is your work experience included on your resume?', 'resume_ok')],
+  ])('refuses %s as a declaration no stored value can make', (_case, fingerprint) => {
+    expect(refusalReason(fingerprint)).toBe('declaration');
+    expect(validateFieldTemplates({ '0': '{workPermit}' }, [fingerprint])).toEqual({});
+  });
+
+  /**
+   * The counterpart: a field the user has a profile entry for stays answerable,
+   * because filling it in is them answering. The dropdown path refuses these
+   * anyway — there the model would be picking Yes or No itself.
+   */
+  it.each([
+    ['Do you need a work permit?', 'work_permit'],
+    ['Highest level of education', 'education'],
+    ['Nationality', 'nationality'],
+  ])('leaves "%s" to the profile rather than refusing it', (label, name) => {
+    expect(refusalReason(fp(label, name))).toBeNull();
   });
 
   it('lets money fields take the salary the user wrote, and nothing else', () => {
@@ -721,6 +778,244 @@ describe('planFieldTemplates (FR-5.3)', () => {
     }
     expect(body).toContain('Preferred name');
     // The key travels in the header, as it must — not in the payload.
+    expect(body).not.toContain(secret);
+    expect((request.headers as Record<string, string>).Authorization).toBe(`Bearer ${secret}`);
+  });
+});
+
+// ─── Picking an option out of a dropdown ─────────────────────────────────────
+
+describe('the option-choice answer contract', () => {
+  /** `serializeFingerprint` order: autocomplete|name|id|semantic|aria|label|placeholder|heading|desc */
+  const fp = (label: string, name = '') => `|${name}||${name}||${label}|||`;
+  const phoneType: SelectQuestion = {
+    fingerprint: fp('Phone Type', 'phone_type'),
+    options: ['Mobile', 'Home', 'Work'],
+  };
+
+  it('takes an index into the options that were offered', () => {
+    expect(validateOptionChoices({ '0': 1 }, [phoneType])).toEqual({ '0': 1 });
+  });
+
+  it('takes a label too, and resolves it to that option index', () => {
+    // Small models answer with the label however the prompt is worded; a correct
+    // answer must not be thrown away over its formatting.
+    expect(validateOptionChoices({ '0': 'Work' }, [phoneType])).toEqual({ '0': 2 });
+    expect(validateOptionChoices({ '0': ' mobile ' }, [phoneType])).toEqual({ '0': 0 });
+    // A quoted index is a formatting habit, not a different answer.
+    expect(validateOptionChoices({ '0': '1' }, [phoneType])).toEqual({ '0': 1 });
+    // …but a quoted index still has to address an option that exists.
+    expect(toOptionIndex('9', phoneType.options)).toBeNull();
+  });
+
+  it('refuses a label the page never offered — the model cannot invent one', () => {
+    expect(validateOptionChoices({ '0': 'Landline' }, [phoneType])).toEqual({});
+    expect(validateOptionChoices({ '0': 'Mobile phone' }, [phoneType])).toEqual({});
+  });
+
+  it('treats every flavour of "I do not know" as no answer', () => {
+    for (const decline of ['', 'unknown', 'none', 'n/a', '-', '?']) {
+      expect(validateOptionChoices({ '0': decline }, [phoneType])).toEqual({});
+    }
+    expect(toOptionIndex(null, phoneType.options)).toBeNull();
+    expect(toOptionIndex(true, phoneType.options)).toBeNull();
+    // A string that normalizes away is two absences agreeing, not a match.
+    expect(toOptionIndex('???', phoneType.options)).toBeNull();
+  });
+
+  it('drops indices that address nothing — in either direction', () => {
+    expect(validateOptionChoices({ '0': 9 }, [phoneType])).toEqual({});
+    expect(validateOptionChoices({ '0': -1 }, [phoneType])).toEqual({});
+    expect(validateOptionChoices({ '0': 1.5 }, [phoneType])).toEqual({});
+    expect(validateOptionChoices({ '5': 0 }, [phoneType])).toEqual({});
+    expect(validateOptionChoices({ notAnIndex: 0 }, [phoneType])).toEqual({});
+    expect(validateOptionChoices([0], [phoneType])).toEqual({});
+    expect(validateOptionChoices(null, [phoneType])).toEqual({});
+  });
+
+  /**
+   * The rule the whole feature stands on. The batch these answers arrive against
+   * should never have contained a protected question — this is the check on the
+   * *other* side of the network, and it holds even if it did.
+   */
+  it.each([
+    ['an age question', fp('Are you at least 18 years of age or older?', 'age_18')],
+    ['a drinking-age question', fp('Are you of required legal drinking age?', 'drinking_age')],
+    ['a work-authorisation question', fp('Are you authorized to work in the US?', 'work_auth')],
+    ['a criminal record', fp('Have you ever been convicted of a felony?', 'conviction')],
+    ['military service', fp('Are you a protected veteran?', 'veteran')],
+    ['a disability', fp('Do you have a disability?', 'disability')],
+    ['a protected characteristic', fp('Gender', 'gender')],
+    ['a consent', fp('Human Resources may contact me regarding other positions', 'hr_contact')],
+    ['an attestation', fp('Is your work experience included on your resume?', 'resume_ok')],
+    ['a level of education', fp('Please list your highest level of education achieved', 'edu')],
+  ])('ignores a model that answered %s', (_case, fingerprint) => {
+    const question: SelectQuestion = { fingerprint, options: ['Alpha', 'Beta', 'Gamma'] };
+    expect(validateOptionChoices({ '0': 1 }, [question])).toEqual({});
+    expect(validateOptionChoices({ '0': 'Beta' }, [question])).toEqual({});
+  });
+
+  it('ignores an answer to a yes/no list even when the wording says nothing', () => {
+    const question: SelectQuestion = {
+      fingerprint: fp('Položka 42', 'q_42'),
+      options: ['Ano', 'Ne'],
+    };
+    expect(validateOptionChoices({ '0': 0 }, [question])).toEqual({});
+  });
+
+  it('states the refusals in the prompt as well, and shows the options numbered', () => {
+    const prompt = buildOptionChoicePrompt([phoneType]);
+    expect(prompt).toContain('0: "Mobile"');
+    expect(prompt).toContain('2: "Work"');
+    expect(prompt).toContain('Phone Type');
+  });
+});
+
+describe('chooseSelectOptions (the dropdown request)', () => {
+  const fp = (label: string, name = '') => `|${name}||${name}||${label}|||`;
+  const phoneType: SelectQuestion = {
+    fingerprint: fp('Phone Type', 'phone_type'),
+    options: ['Mobile', 'Home', 'Work'],
+  };
+
+  function reply(content: string): Response {
+    return jsonResponse({ choices: [{ message: { content } }] });
+  }
+
+  it('asks, and answers with the option index', async () => {
+    fetchMock.mockResolvedValueOnce(reply('{"0": 0}'));
+    await expect(chooseSelectOptions([phoneType], groqEndpoint)).resolves.toEqual({ '0': 0 });
+  });
+
+  it('leaves the dropdowns alone when the model returns invalid JSON', async () => {
+    fetchMock.mockResolvedValueOnce(reply('not json at all'));
+    await expect(chooseSelectOptions([phoneType], groqEndpoint)).resolves.toEqual({});
+  });
+
+  it('treats an empty completion as "no answer", not as a parse failure', async () => {
+    fetchMock.mockResolvedValueOnce(reply('   '));
+    await expect(chooseSelectOptions([phoneType], groqEndpoint)).resolves.toEqual({});
+  });
+
+  it('makes no request at all when there is nothing askable', async () => {
+    await expect(chooseSelectOptions([], groqEndpoint)).resolves.toEqual({});
+    // A yes/no list is not askable, so a batch of one is a batch of none.
+    await expect(
+      chooseSelectOptions([{ fingerprint: fp('Anything'), options: ['Yes', 'No'] }], groqEndpoint),
+    ).resolves.toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('declines without a key, and without a request or an error', async () => {
+    await expect(
+      chooseSelectOptions([phoneType], { ...groqEndpoint, apiKey: '' }),
+    ).resolves.toEqual({});
+    await expect(
+      chooseSelectOptions([phoneType], { ...groqEndpoint, baseUrl: '' }),
+    ).resolves.toEqual({});
+    await expect(
+      chooseSelectOptions([phoneType], { ...groqEndpoint, apiKey: 'sk-or-v1-abcdef' }),
+    ).resolves.toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The egress point applies the policy itself. A caller that assembled a batch
+   * without it — a stale content script, a message forged from elsewhere —
+   * cannot make this function put a protected question on the wire.
+   */
+  it('filters the batch again before the bytes leave the browser', async () => {
+    fetchMock.mockResolvedValueOnce(reply('{"0": 0}'));
+
+    await chooseSelectOptions(
+      [
+        { fingerprint: fp('Are you at least 18 years of age or older?'), options: ['Yes', 'No'] },
+        { fingerprint: fp('Do you have a disability?'), options: ['I do', 'I do not', 'Decline'] },
+        phoneType,
+      ],
+      groqEndpoint,
+    );
+
+    // The batch itself, not the rules: the system prompt names these categories
+    // on purpose, and it is the user half that says what is on this page.
+    const { messages } = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as {
+      messages: { content: string }[];
+    };
+    const batch = messages[1].content;
+    expect(batch).not.toContain('18 years');
+    expect(batch).not.toContain('disability');
+    expect(batch).not.toContain('I do not');
+    expect(batch).toContain('Phone Type');
+  });
+
+  it('validates the reply against the filtered batch, not the caller list', async () => {
+    // Index 0 in the caller's list is the refused question; index 0 in what was
+    // actually sent is `Phone Type`, and that is what an answer of "0" means.
+    fetchMock.mockResolvedValueOnce(reply('{"0": 1}'));
+
+    const choices = await chooseSelectOptions(
+      [{ fingerprint: fp('Are you at least 18?'), options: ['Yes', 'No'] }, phoneType],
+      groqEndpoint,
+    );
+
+    expect(choices).toEqual({ '0': 1 });
+  });
+
+  it('never sends more than MAX_OPTION_SELECTS dropdowns', async () => {
+    fetchMock.mockResolvedValueOnce(reply('{}'));
+    const many = Array.from({ length: MAX_OPTION_SELECTS + 5 }, (_, i) => ({
+      fingerprint: fp(`Category ${i}`),
+      options: ['Alpha', 'Beta'],
+    }));
+
+    await chooseSelectOptions(many, groqEndpoint);
+
+    const body = String(fetchMock.mock.calls[0][1].body);
+    expect(body).toContain('Category 0');
+    expect(body).toContain(`Category ${MAX_OPTION_SELECTS - 1}`);
+    expect(body).not.toContain(`Category ${MAX_OPTION_SELECTS}`);
+  });
+
+  it('never sends a list long enough to be a country dropdown', async () => {
+    fetchMock.mockResolvedValueOnce(reply('{}'));
+    const countries = Array.from({ length: MAX_SELECT_OPTIONS + 200 }, (_, i) => `Country ${i}`);
+
+    await chooseSelectOptions(
+      [{ fingerprint: fp('Country', 'country'), options: countries }, phoneType],
+      groqEndpoint,
+    );
+
+    const body = String(fetchMock.mock.calls[0][1].body);
+    expect(body).not.toContain('Country 0');
+    expect(body).toContain('Phone Type');
+  });
+
+  /**
+   * What one request contains: the dropdowns' own identities and their own
+   * option labels. Not the profile — the model is not told who is filling the
+   * form in, only what the form offers.
+   */
+  it('puts nothing but the fingerprints and the option labels in the body (S-3)', async () => {
+    fetchMock.mockResolvedValueOnce(reply('{}'));
+    const profile = createEmptyProfile({
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      email: 'ada@example.com',
+      phone: '+420123456789',
+      city: 'Praha',
+      about: 'I build things that work.',
+    });
+    const secret = 'gsk_supersecretkeyvalue';
+
+    await chooseSelectOptions([phoneType], { ...groqEndpoint, apiKey: secret });
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    const body = String(request.body);
+    for (const value of Object.values(profile)) {
+      if (value && value !== profile.id) expect(body).not.toContain(value);
+    }
+    expect(body).toContain('Phone Type');
+    expect(body).toContain('Mobile');
     expect(body).not.toContain(secret);
     expect((request.headers as Record<string, string>).Authorization).toBe(`Bearer ${secret}`);
   });

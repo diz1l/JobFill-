@@ -9,7 +9,12 @@
  * `shared/api/provider.ts` for why that indirection exists.
  */
 import type { JobInfo, Profile } from '../types';
-import { apiErrorMessage, MAX_CLASSIFY_FIELDS, type ApiErrorKind } from '../messages';
+import {
+  apiErrorMessage,
+  MAX_CLASSIFY_FIELDS,
+  type ApiErrorKind,
+  type SelectQuestion,
+} from '../messages';
 import { httpJson, HttpError } from './http';
 import {
   chatCompletionsUrl,
@@ -22,6 +27,12 @@ import {
   FIELD_TEMPLATE_SYSTEM_PROMPT,
   validateFieldTemplates,
 } from './fieldTemplates';
+import {
+  buildOptionChoicePrompt,
+  OPTION_CHOICE_SYSTEM_PROMPT,
+  validateOptionChoices,
+} from './optionChoice';
+import { askableSelects } from '../filler/questionPolicy';
 import type { ValueTemplate } from '../filler/valueTemplate';
 
 const TIMEOUT_MS = 15_000;
@@ -380,6 +391,53 @@ export async function planFieldTemplates(
     return validateFieldTemplates(JSON.parse(raw || '{}'), batch);
   } catch {
     // Invalid JSON → fields stay as the heuristics left them.
+    return {};
+  }
+}
+
+/**
+ * Ask which of a dropdown's own options answers it, and get back an *index* per
+ * dropdown.
+ *
+ * This is the one request in the extension that carries text read out of the
+ * page: the labels of a `<select>`'s own options. Nothing else — no profile
+ * value, no page prose, no other control's contents, and no dropdown the user
+ * has already answered. {@link askableSelects} is applied here as well as where
+ * the batch was built, so the policy that decides what may be asked about (no
+ * protected question, no yes/no list, size-capped) is enforced at the point the
+ * bytes leave the browser and not only at the point they were assembled.
+ *
+ * Silent on every failure, for the same reason as {@link planFieldTemplates}:
+ * this is an unattended pass over controls nothing was written into.
+ */
+export async function chooseSelectOptions(
+  selects: SelectQuestion[],
+  endpoint: LlmEndpoint,
+): Promise<Record<string, number>> {
+  const batch = askableSelects(selects);
+  if (batch.length === 0) return {};
+  if (!endpoint.apiKey || !endpoint.baseUrl) return {};
+  if (keyProviderMismatch(endpoint.providerId, endpoint.apiKey)) return {};
+
+  const raw = await chatCompletion({
+    endpoint,
+    messages: [
+      { role: 'system', content: OPTION_CHOICE_SYSTEM_PROMPT },
+      { role: 'user', content: buildOptionChoicePrompt(batch) },
+    ],
+    // An answer is `"3": 2,` — eight tokens per dropdown, at most eight
+    // dropdowns. The budget is an order of magnitude clear of that, because a
+    // truncated reply is invalid JSON and loses the whole batch.
+    maxTokens: 300,
+    temperature: 0,
+    json: true,
+  });
+
+  try {
+    // Validated against the *filtered* batch, never the caller's list: an index
+    // the caller offered but policy removed addresses a different dropdown here.
+    return validateOptionChoices(JSON.parse(raw || '{}'), batch);
+  } catch {
     return {};
   }
 }
