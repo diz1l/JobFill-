@@ -28,17 +28,19 @@ export default defineConfig({
        */
       thresholds: {
         // Repo-wide budget of untested code.
-        // Measured 2026-08-15, after shared/storage and shared/api were covered:
-        //   8 lines, 15 statements, 0 functions, 28 branches uncovered.
+        // Measured 2026-08-15, after the schema v2 profile migration landed:
+        //   2 lines, 9 statements, 0 functions, 25 branches uncovered.
         //
         // There is deliberately no headroom left. What remains uncovered is
         // enumerated below and is *unreachable by construction*, so any increase
         // is new untested code and should fail:
-        //   - storage/validate.ts 73–86 — the schema-migration loop. It runs
-        //     `while (version < SYNC_SCHEMA_VERSION)`, `SYNC_SCHEMA_VERSION` is
-        //     1, `MIGRATIONS` is empty, and the guard above it already returns
-        //     for anything below 1. The first v2 migration makes this reachable
-        //     and is where the tests for it belong. (13 lines / 11 stmts / 6 br)
+        //   - storage/validate.ts — the two guards *inside* the now-live
+        //     schema-migration loop: a version with no `MIGRATIONS` entry, and a
+        //     migration that fails to raise the version. Both are about a
+        //     mistake in this repo's own table rather than about anything a user
+        //     can hand us, and `SYNC_SCHEMA_VERSION` 2 with a complete table
+        //     reaches neither. The loop itself is covered by "schema v1 → v2" in
+        //     tests/storage.test.ts. (2 lines / 3 stmts / 3 br)
         //   - api/groq.ts 125–126 — `toGroqError`'s `err instanceof GroqApiError`
         //     short-circuit and its `endpoint?.label ?? …`. The function is
         //     module-private, is called from exactly two catch blocks that can
@@ -58,9 +60,9 @@ export default defineConfig({
         //   - extractors (3 br), field-matcher/fingerprint.ts (4 stmts / 11 br),
         //     filler/inlineButton.ts + missingData.ts (2 br) — pre-existing, and
         //     documented against their own gates below.
-        lines: -8,
-        statements: -15,
-        branches: -28,
+        lines: -2,
+        statements: -9,
+        branches: -25,
         // Zero uncovered functions. Expressed as a percentage rather than as
         // `-0`, because Vitest tests `threshold >= 0` to decide which of the two
         // meanings applies and `-0 >= 0` is true — `-0` would silently become a
@@ -77,14 +79,15 @@ export default defineConfig({
           branches: 98,
         },
 
-        // Measured: 97.65% lines / 97.76% stmts / 100% funcs / 97.06% branches.
-        // Everything missing is validate.ts's dormant migration loop; local.ts,
-        // sync.ts and retryQueue.ts are at 100% lines and functions.
+        // Measured: 99.42% lines / 99.27% stmts / 100% funcs / 98.58% branches.
+        // The migration loop is live and tested now, so the gate went up with
+        // it; what is left is the two guards named above. local.ts, sync.ts and
+        // retryQueue.ts are at 100% lines and functions.
         'shared/storage/**': {
-          lines: 97,
-          statements: 97,
+          lines: 99,
+          statements: 99,
           functions: 100,
-          branches: 97,
+          branches: 98,
         },
 
         // Measured: 100% across the board. `types.ts` and `messages.ts` are
