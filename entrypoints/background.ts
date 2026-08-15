@@ -7,7 +7,12 @@ import {
   probeModel,
   GroqApiError,
 } from '../shared/api/groq';
-import { buildEndpoint, keyProviderMismatch, providerOf } from '../shared/api/provider';
+import {
+  buildEndpoint,
+  keyFormatProblem,
+  keyProviderMismatch,
+  providerOf,
+} from '../shared/api/provider';
 import { logToNotion, inspectNotionDatabase, clearNotionSchemaCache } from '../shared/api/notion';
 import { logToSheets } from '../shared/api/sheets';
 import { RemoteLogError, toRemoteLogError } from '../shared/api/remoteLog';
@@ -428,6 +433,13 @@ async function handleCheckGroq(
     return { type: 'GROQ_CHECK_ERROR', kind: 'WRONG_PROVIDER', message: mismatch };
   }
 
+  // A key for the right provider that cannot be one. Worth its own check because
+  // the listing step below does not necessarily authenticate — see `modelCount`.
+  const malformed = keyFormatProblem(endpoint.providerId, key);
+  if (malformed) {
+    return { type: 'GROQ_CHECK_ERROR', kind: 'UNAUTHORIZED', message: malformed };
+  }
+
   let models: string[];
   try {
     models = await listModels(endpoint);
@@ -441,6 +453,9 @@ async function handleCheckGroq(
     provider: endpoint.label,
     model: endpoint.model,
     modelOk: false,
+    // A catalogue listing is served to anyone; only an account-scoped one has
+    // authenticated by the time we get here.
+    keyProven: providerOf(endpoint.providerId).catalogue === 'account',
     modelCount: models.length,
     ...offeredModels(endpoint.providerId, endpoint.model, models),
   };

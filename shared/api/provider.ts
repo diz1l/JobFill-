@@ -326,6 +326,45 @@ function article(name: string): string {
  * unknown — a guess would be worse than nothing, because the user would have to
  * disprove it.
  */
+/**
+ * Prefix every key of a provider is guaranteed to carry, where there is one.
+ *
+ * Together issues bare hex and a self-hosted endpoint can want anything, so they
+ * are absent — for those, a key's shape says nothing.
+ */
+const REQUIRED_KEY_PREFIX: Partial<Record<ProviderId, string>> = {
+  groq: 'gsk_',
+  openrouter: 'sk-or-v1-',
+  openai: 'sk-',
+};
+
+/**
+ * A key for the right provider that cannot be one — it is missing the prefix
+ * that provider always issues.
+ *
+ * This is separate from {@link keyProviderMismatch} because the two failures look
+ * nothing alike from here: a mismatched key is a *recognised* key from the wrong
+ * company, while this one matches nothing at all. Selecting text in a browser
+ * and clipping the first character is ordinary, and `sk-or-v1-…` losing its `s`
+ * produced a key that passed every check JobFill had, listed 411 models from
+ * OpenRouter's public catalogue, and only failed at the first authenticated
+ * request — by which point the UI had already said the key was accepted.
+ */
+export function keyFormatProblem(providerId: ProviderId, key: string): string | null {
+  const trimmed = key.trim();
+  if (!trimmed) return null;
+
+  const required = REQUIRED_KEY_PREFIX[providerId];
+  if (!required) return null;
+  if (trimmed.startsWith(required)) return null;
+
+  // A recognisable key from elsewhere is the other function's story to tell.
+  if (identifyKeyOrigin(trimmed)) return null;
+
+  const selected = providerOf(providerId);
+  return `${selected.label} keys start with “${required}”, and this one does not. Copy it again from ${selected.keysUrl} — it is easy to miss the first character when selecting it.`;
+}
+
 export function keyProviderMismatch(providerId: ProviderId, key: string): string | null {
   const origin = identifyKeyOrigin(key);
   if (!origin) return null;

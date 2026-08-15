@@ -164,6 +164,15 @@ export interface GroqCheckReport {
   model: string;
   /** `true` when a one-token completion with {@link model} came back. */
   modelOk: boolean;
+  /**
+   * Whether listing the models authenticated the key.
+   *
+   * True only for providers whose `/models` is account-scoped (Groq, OpenAI).
+   * OpenRouter and Together return their public catalogue to an unauthenticated
+   * request, so a successful listing there says nothing about the key and only
+   * {@link modelOk} does.
+   */
+  keyProven: boolean;
   /** UI copy for why the probe failed. Absent when {@link modelOk}. */
   modelProblem?: string;
   /** Kind behind {@link modelProblem} — separates "wrong model" from "unclear". */

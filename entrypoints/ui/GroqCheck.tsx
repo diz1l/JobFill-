@@ -145,13 +145,34 @@ function ReportCard({
     <div className="card flex flex-col gap-3">
       {/* The key gets its own line even when the model failed: "your key is
           fine" is the single most useful thing to know at that moment. */}
+      {/* Listing models is only evidence about the key where the list is the
+          account's. OpenRouter and Together answer with their whole public
+          catalogue, so a broken key gets the same 400-model reply a good one
+          does — and saying "accepted" there produced a card that congratulated
+          the key on one line and reported an authentication failure on the next.
+          Where the listing proves nothing, the probe below is the only verdict. */}
       <p className="flex items-start gap-2 font-medium text-fg">
-        <IconCheck className="mt-0.5 size-4 text-conf-high" />
+        {report.keyProven ? (
+          <IconCheck className="mt-0.5 size-4 text-conf-high" />
+        ) : (
+          <IconAlert className="mt-0.5 size-4 text-fg-muted" />
+        )}
         <span>
-          Key <code className="code-chip">{report.keyHint}</code> accepted —{' '}
-          {report.modelCount > 0
-            ? `${report.provider} answered with ${report.modelCount} model${report.modelCount === 1 ? '' : 's'}.`
-            : `${report.provider} lists no models for it.`}
+          {report.keyProven ? (
+            <>
+              Key <code className="code-chip">{report.keyHint}</code> accepted —{' '}
+              {report.modelCount > 0
+                ? `${report.provider} answered with ${report.modelCount} model${report.modelCount === 1 ? '' : 's'}.`
+                : `${report.provider} lists no models for it.`}
+            </>
+          ) : (
+            <>
+              {report.provider} lists {report.modelCount} model
+              {report.modelCount === 1 ? '' : 's'} to anyone who asks, so that says nothing about
+              key <code className="code-chip">{report.keyHint}</code> yet. The model test below is
+              what checks it.
+            </>
+          )}
         </span>
       </p>
 

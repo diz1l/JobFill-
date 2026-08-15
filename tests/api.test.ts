@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { httpRequest, httpJson, HttpError } from '../shared/api/http';
+import * as provider from '../shared/api/provider';
 import { RemoteLogError, toRemoteLogError } from '../shared/api/remoteLog';
 import {
   buildMapping,
@@ -1376,5 +1377,40 @@ describe('toRemoteLogError for things that are not HTTP failures', () => {
     });
     expect(err.message).toBe('Could not reach the Apps Script Web App.');
     expect(err.detail).toBe('boom');
+  });
+});
+
+describe('key shape is checked before the key is used', () => {
+  it('rejects an OpenRouter key that lost its leading character', () => {
+    // Selecting a key in a browser and clipping the first character is ordinary.
+    // `k-or-v1-…` matches no provider's prefix, so the mismatch check said
+    // nothing, OpenRouter's public catalogue answered anyway, and the UI reported
+    // the key as accepted right before the first real request failed.
+    const problem = provider.keyFormatProblem('openrouter', 'k-or-v1-abcdef0123456789');
+    expect(problem).toContain('sk-or-v1-');
+    expect(problem).toContain('openrouter.ai/keys');
+  });
+
+  it('accepts a well-formed key for each provider that has a known prefix', () => {
+    expect(provider.keyFormatProblem('openrouter', 'sk-or-v1-abcdef')).toBeNull();
+    expect(provider.keyFormatProblem('groq', 'gsk_abcdef')).toBeNull();
+    expect(provider.keyFormatProblem('openai', 'sk-proj-abcdef')).toBeNull();
+  });
+
+  it('says nothing about providers whose key format is not fixed', () => {
+    // Together issues bare hex; a self-hosted endpoint can want anything.
+    expect(provider.keyFormatProblem('together', 'deadbeef')).toBeNull();
+    expect(provider.keyFormatProblem('custom', 'whatever')).toBeNull();
+  });
+
+  it('leaves a recognisable key from elsewhere to the mismatch check', () => {
+    // Two different failures deserve two different sentences: this one is a real
+    // OpenRouter key, and the useful advice is "switch provider", not "recopy it".
+    expect(provider.keyFormatProblem('groq', 'sk-or-v1-abcdef')).toBeNull();
+    expect(provider.keyProviderMismatch('groq', 'sk-or-v1-abcdef')).toContain('OpenRouter');
+  });
+
+  it('ignores an empty field — that is the missing-key message, not a format one', () => {
+    expect(provider.keyFormatProblem('openrouter', '   ')).toBeNull();
   });
 });
