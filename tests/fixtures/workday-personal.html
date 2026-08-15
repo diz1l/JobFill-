@@ -1,0 +1,322 @@
+<!--
+  Workday "My Information" page — the form the extension was run on live, and
+  the reason this expansion exists. Reproduced field for field from that run.
+
+  Structure (verbatim Workday convention, same as workday.html):
+   * ids are auto-generated (`input-9`); the identity lives in
+     `data-automation-id`, and on the questionnaire even that is opaque
+     (`primaryQuestionnaire--question1`);
+   * <label> has no `for`; the control is linked with
+     `aria-labelledby="<label-id> <required-marker-id>"`;
+   * the label sits in a sibling <div> three wrappers above the input;
+   * hashed emotion class names;
+   * **two columns**: pairs of fields share a `css-row`, so the section <h4> is
+     four ancestors away — the depth at which `getContextHeading` gives up.
+
+  What it pins, in the order the live run reported it:
+   * `Legal FirstName` / `Legal MiddleName` / `Legal LastName` — the qualifier
+     "Legal" is what stopped the label being dedicated, so each field scored 20
+     and nothing was written. Only `firstName` and `lastName` existed at all.
+   * `Preferred Name`, `Suffix` — no rule at all; `Suffix` additionally sits
+     under a "Legal Name" heading and a `legalNameSection_socialSuffix`
+     attribute, which is enough for `fullName` to claim it.
+   * `Phone Type` — a Mobile/Home/Work SELECTOR that scored phone/60/medium and
+     received the candidate's phone number. The bug this fixture is named for.
+   * `Mobile/Alternate Phone` — matched `Mobile` but left "Alternate Phone"
+     stranded, so it never reached the fill threshold.
+   * `Country` (select) sits next to `City`, and the state selector carries
+     Workday's real `addressSection_countryRegion` attribute — the two ways
+     `country` and `state` steal each other's field.
+   * two age questions: "years of age" must never look like years of experience.
+-->
+<html lang="en">
+<head><title>My Information - Platform Engineer - Workday</title></head>
+<body>
+  <div data-automation-id="applyFlowPage" class="css-hp4l7t">
+    <h1 data-automation-id="pageHeader" class="css-1id67r3">My Information</h1>
+
+    <form data-automation-id="applicationForm">
+
+      <!-- ── Legal Name ─────────────────────────────────────────────────── -->
+      <div data-automation-id="legalNameSection" class="css-1x9lyaj">
+        <h4 data-automation-id="legalNameSection-title" class="css-1ry7f0h">Legal Name</h4>
+
+        <div class="css-row">
+          <div data-automation-id="formField-legalNameSection_firstName" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="lns-first-label" class="css-1x8lyaj">Legal FirstName</label>
+              <abbr id="lns-first-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="legalNameSection_firstName" id="input-9" type="text"
+                     aria-labelledby="lns-first-label lns-first-req" />
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-legalNameSection_middleName" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="lns-middle-label" class="css-1x8lyaj">Legal MiddleName</label>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="legalNameSection_middleName" id="input-11" type="text"
+                     aria-labelledby="lns-middle-label" />
+            </div></div>
+          </div>
+        </div>
+
+        <div class="css-row">
+          <div data-automation-id="formField-legalNameSection_lastName" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="lns-last-label" class="css-1x8lyaj">Legal LastName</label>
+              <abbr id="lns-last-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="legalNameSection_lastName" id="input-13" type="text"
+                     aria-labelledby="lns-last-label lns-last-req" />
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-personalInfoSection_preferredName" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="pis-preferred-label" class="css-1x8lyaj">Preferred Name</label>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="personalInfoSection_preferredName" id="input-15" type="text"
+                     aria-labelledby="pis-preferred-label" />
+            </div></div>
+          </div>
+        </div>
+
+        <div class="css-row">
+          <div data-automation-id="formField-legalNameSection_socialSuffix" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="lns-suffix-label" class="css-1x8lyaj">Suffix</label>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="legalNameSection_socialSuffix" id="input-17"
+                      aria-labelledby="lns-suffix-label">
+                <option value=""></option>
+                <option>Jr.</option>
+                <option>Sr.</option>
+                <option>Ph.D.</option>
+              </select>
+            </div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Contact Information ────────────────────────────────────────── -->
+      <div data-automation-id="contactInformationSection" class="css-1x9lyaj">
+        <h4 class="css-1ry7f0h">Contact Information</h4>
+
+        <div class="css-row">
+          <div data-automation-id="formField-email" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="cis-email-label" class="css-1x8lyaj">Email</label>
+              <abbr id="cis-email-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="email" id="input-21" type="text"
+                     aria-labelledby="cis-email-label cis-email-req" />
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-phone-number" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="cis-phone-label" class="css-1x8lyaj">Phone</label>
+              <abbr id="cis-phone-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="phone-number" id="input-23" type="text"
+                     aria-labelledby="cis-phone-label cis-phone-req" />
+            </div></div>
+          </div>
+        </div>
+
+        <div class="css-row">
+          <!-- THE BUG: a Mobile / Home / Work selector, filled with +420737647855 -->
+          <div data-automation-id="formField-phone-device-type" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="cis-phonetype-label" class="css-1x8lyaj">Phone Type</label>
+              <abbr id="cis-phonetype-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="phone-device-type" id="input-25"
+                      aria-labelledby="cis-phonetype-label cis-phonetype-req">
+                <option value=""></option>
+                <option>Mobile</option>
+                <option>Home</option>
+                <option>Work</option>
+              </select>
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-alternatePhone" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="cis-altphone-label" class="css-1x8lyaj">Mobile/Alternate Phone</label>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="alternatePhone" id="input-27" type="text"
+                     aria-labelledby="cis-altphone-label" />
+            </div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Address ────────────────────────────────────────────────────── -->
+      <div data-automation-id="addressSection" class="css-1x9lyaj">
+        <h4 class="css-1ry7f0h">Address</h4>
+
+        <div class="css-row">
+          <div data-automation-id="formField-addressSection_country" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="as-country-label" class="css-1x8lyaj">Country</label>
+              <abbr id="as-country-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="addressSection_country" id="input-31"
+                      aria-labelledby="as-country-label as-country-req">
+                <option value=""></option>
+                <option>Czechia</option>
+                <option>Slovakia</option>
+              </select>
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-addressSection_addressLine1" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="as-line1-label" class="css-1x8lyaj">Address Line 1</label>
+              <abbr id="as-line1-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_addressLine1" id="input-33" type="text"
+                     aria-labelledby="as-line1-label as-line1-req" />
+            </div></div>
+          </div>
+        </div>
+
+        <div class="css-row">
+          <div data-automation-id="formField-addressSection_addressLine2" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="as-line2-label" class="css-1x8lyaj">Address Line 2</label>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_addressLine2" id="input-35" type="text"
+                     aria-labelledby="as-line2-label" />
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-addressSection_city" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="as-city-label" class="css-1x8lyaj">City</label>
+              <abbr id="as-city-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_city" id="input-37" type="text"
+                     aria-labelledby="as-city-label as-city-req" />
+            </div></div>
+          </div>
+        </div>
+
+        <div class="css-row">
+          <!-- Workday really does call the state selector `countryRegion` -->
+          <div data-automation-id="formField-addressSection_countryRegion" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="as-region-label" class="css-1x8lyaj">State / Province / County</label>
+              <abbr id="as-region-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="addressSection_countryRegion" id="input-39"
+                      aria-labelledby="as-region-label as-region-req">
+                <option value=""></option>
+                <option>Hlavní město Praha</option>
+                <option>Jihomoravský kraj</option>
+              </select>
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-addressSection_postalCode" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="as-zip-label" class="css-1x8lyaj">Zip/ Postal Code</label>
+              <abbr id="as-zip-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <input data-automation-id="addressSection_postalCode" id="input-41" type="text"
+                     aria-labelledby="as-zip-label as-zip-req" />
+            </div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Additional Information ─────────────────────────────────────── -->
+      <div data-automation-id="additionalInformationSection" class="css-1x9lyaj">
+        <h4 class="css-1ry7f0h">Additional Information</h4>
+
+        <div class="css-row">
+          <div data-automation-id="formField-languagePreference" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="ais-lang-label" class="css-1x8lyaj">Preferred Language</label>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="languagePreference" id="input-51"
+                      aria-labelledby="ais-lang-label">
+                <option value=""></option>
+                <option>English</option>
+                <option>Čeština</option>
+              </select>
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-primaryQuestionnaire--question1" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="ais-q1-label" class="css-1x8lyaj">Please list your highest level of education achieved</label>
+              <abbr id="ais-q1-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="primaryQuestionnaire--question1" id="input-53"
+                      aria-labelledby="ais-q1-label ais-q1-req">
+                <option value=""></option>
+                <option>High school</option>
+                <option>Bachelor's degree</option>
+                <option>Master's degree</option>
+              </select>
+            </div></div>
+          </div>
+        </div>
+
+        <div class="css-row">
+          <div data-automation-id="formField-primaryQuestionnaire--question2" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="ais-q2-label" class="css-1x8lyaj">Are you at least 18 years of age?</label>
+              <abbr id="ais-q2-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="primaryQuestionnaire--question2" id="input-55"
+                      aria-labelledby="ais-q2-label ais-q2-req">
+                <option value=""></option>
+                <option>Yes</option>
+                <option>No</option>
+              </select>
+            </div></div>
+          </div>
+
+          <div data-automation-id="formField-primaryQuestionnaire--question3" class="css-1sxa8ic">
+            <div class="css-k008qs">
+              <label id="ais-q3-label" class="css-1x8lyaj">Are you 40 years of age or older?</label>
+              <abbr id="ais-q3-req" title="required" aria-hidden="true">*</abbr>
+            </div>
+            <div class="css-1yjgnfd"><div class="css-1ijcfmg">
+              <select data-automation-id="primaryQuestionnaire--question3" id="input-57"
+                      aria-labelledby="ais-q3-label ais-q3-req">
+                <option value=""></option>
+                <option>Yes</option>
+                <option>No</option>
+              </select>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</body>
+</html>

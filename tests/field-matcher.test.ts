@@ -380,8 +380,17 @@ describe('city — Czech vocabulary (P2-2)', () => {
     expect(fills(labelled('Místo', 'name="q_1"'))).toBeNull();
   });
 
-  it('"Kraj" is not a city — the profile has no region to write there', () => {
-    expect(classify(labelled('Kraj', 'name="kraj"'))).toBeNull();
+  /**
+   * Was: `classify("Kraj")` is null, "the profile has no region to write
+   * there". It has one now — `state` — so the field is filled, from a
+   * different rule. The half that mattered is unchanged and still asserted: a
+   * `kraj` is not a `city`, and the city rule must not touch it.
+   */
+  it('"Kraj" is a region, and still never the city', () => {
+    const match = classify(labelled('Kraj', 'name="kraj"'));
+    expect(match?.fieldType).toBe('state');
+    expect(match?.fieldType).not.toBe('city');
+    expect(fills(labelled('Kraj', 'name="kraj"'))).not.toBe('city');
   });
 });
 
@@ -481,11 +490,22 @@ describe('dedicated labels (P2-1) — the label is often the only signal there i
 
   /**
    * "Preferred name" is a nickname ("How should we call you?"), offered by ATS
-   * *next to* Legal Name. The profile holds a legal name, so the field belongs
-   * to the model path — the bonus must not promote it.
+   * *next to* Legal Name.
+   *
+   * Was: unresolved, because the profile held a legal name and nothing else, so
+   * writing it here was a guess and the field belonged to the model path. The
+   * profile now carries `preferredName`, so the same phrasing resolves — to its
+   * own type. The reason it was originally excluded is preserved exactly: it is
+   * still a `fullName` disqualifier (`preferred` remains in NON_PERSON_NAME),
+   * and it is neither a first nor a last name.
    */
-  it('"Preferred name" is a nickname and stays unresolved for the model', () => {
-    expect(classify('<label for="f">Preferred name</label><input id="f" name="a3f9c1" />')).toBeNull();
+  it('"Preferred name" is a nickname — its own field, never the legal one', () => {
+    const match = classify('<label for="f">Preferred name</label><input id="f" name="a3f9c1" />');
+    expect(match?.fieldType).toBe('preferredName');
+    expect(match?.confidence).toBe('medium');
+    for (const notThis of ['fullName', 'firstName', 'lastName']) {
+      expect(fills('<label for="f">Preferred name</label><input id="f" name="a3f9c1" />')).not.toBe(notThis);
+    }
   });
 });
 
@@ -528,6 +548,30 @@ describe('dictionary — other false positives found while auditing all 14 rules
 
   it('"Notice period" is still availability', () => {
     expect(fills(labelled('Notice period', 'name="notice_period"'))).toBe('availability');
+  });
+
+  /**
+   * The new rules brought in five more two-and-three-letter tokens (`ŘP`, `DOB`,
+   * `PSČ`, `Apt`, `Zip`), which is exactly the shape that produced the old
+   * `/tel(?!l)/` disaster. Each has to stand as a whole token, and the words
+   * that contain it must be unaffected — including `Výpovědní doba`, which
+   * carries `dob` inside it and is a *notice period*, not a birth date.
+   */
+  const abbreviationTraps: [string, string, FieldType][] = [
+    ['Corporate email', 'name="corp_email"', 'drivingLicence'],
+    ['Výpovědní doba', 'name="vypovedni_doba"', 'dateOfBirth'],
+    ['Zipline experience', 'name="zipline"', 'postalCode'],
+    ['Adaptability', 'name="adaptability"', 'addressLine2'],
+    ['Descriptor', 'name="descriptor"', 'postalCode'],
+  ];
+  for (const [label, attrs, notThis] of abbreviationTraps) {
+    it(`"${label}" does not match the ${notThis} abbreviation`, () => {
+      expect(fills(labelled(label, attrs))).not.toBe(notThis);
+    });
+  }
+
+  it('"Výpovědní doba" is still a notice period, not a date of birth', () => {
+    expect(fills(labelled('Výpovědní doba', 'name="vypovedni_doba"'))).toBe('availability');
   });
 
   const phoneTraps = ['Hotel', 'Telegram', 'Intel experience'];
@@ -603,6 +647,167 @@ describe('dictionary — other false positives found while auditing all 14 rules
       expect(rule.pattern.test(''), `${rule.type} matched an empty string`).toBe(false);
     }
   });
+});
+
+/**
+ * The live bug: `Phone Type` — a Mobile / Home / Work `<select>` — scored
+ * phone/60/medium and received "+420737647855".
+ *
+ * Both halves of that 60 were legitimate signals: the attribute really does say
+ * "phone", and the label really is the word "Phone" plus a qualifier the scorer
+ * treats as grammar. Nothing about the *scoring* was wrong, so the fix is a
+ * disqualifier, not a penalty — see `categoryOf` in the dictionary.
+ */
+describe('category selectors — "which kind of X" is never an X', () => {
+  const selectors: [string, string][] = [
+    ['Phone Type', 'name="phone_type"'],
+    ['Phone Device Type', 'name="phone-device-type"'],
+    ['Type of phone', 'name="phone_type"'],
+    ['Typ telefonu', 'name="typ_telefonu"'],
+    ['Druh telefonu', 'name="druh_telefonu"'],
+    ['Email Type', 'name="email_type"'],
+    ['Address Type', 'name="address_type"'],
+    ['Druh adresy', 'name="druh_adresy"'],
+    ['Name Type', 'name="name_type"'],
+    ['Employer type', 'name="employer_type"'],
+    ['Position type', 'name="position_type"'],
+  ];
+
+  for (const [label, attrs] of selectors) {
+    it(`"${label}" is a selector and receives nothing`, () => {
+      expect(fills(`<label for="f">${label}</label><select id="f" ${attrs}></select>`)).toBeNull();
+    });
+  }
+
+  /**
+   * Why a `negative` and not a smaller score. Blocking the dedicated bonus would
+   * have left the live field on 45 — over `MEDIUM_THRESHOLD`, still filled. A
+   * disqualifier holds however strong the evidence is, up to and including the
+   * `autocomplete` attribute, which on its own is worth `high`.
+   */
+  it('outranks every signal there is, including autocomplete=tel', () => {
+    expect(classify('<input autocomplete="tel" name="phone_type" aria-label="Phone Type" />')).toBeNull();
+    expect(
+      classify(
+        '<label for="f">Phone Type</label>' +
+          '<select id="f" name="phone_type" data-automation-id="phone-device-type" aria-label="Phone Type"></select>',
+      ),
+    ).toBeNull();
+  });
+
+  /** The `<select>` tag is NOT the signal — half the new rules are selects */
+  const fillableSelects: [string, string, string][] = [
+    ['Country', 'name="country"', 'country'],
+    ['State / Province / County', 'name="state"', 'state'],
+    ['Preferred Language', 'name="preferred_language"', 'preferredLanguage'],
+    ['Suffix', 'name="name_suffix"', 'nameSuffix'],
+    ['Highest level of education', 'name="education"', 'education'],
+  ];
+  for (const [label, attrs, expected] of fillableSelects) {
+    it(`"${label}" is a <select> and is still filled as ${expected}`, () => {
+      expect(fills(`<label for="f">${label}</label><select id="f" ${attrs}></select>`)).toBe(expected);
+    });
+  }
+
+  /**
+   * The exceptions, and the reason this is per-rule rather than a check in the
+   * scorer: for these three the *category is the value* the profile holds.
+   */
+  const categoryIsTheValue: [string, string, string][] = [
+    ['Visa type', 'name="visa_type"', 'workPermit'],
+    ['Driving licence category', 'name="driving_licence_category"', 'drivingLicence'],
+    ['Education level', 'name="education_level"', 'education'],
+    ['Type of driving licence', 'name="licence"', 'drivingLicence'],
+  ];
+  for (const [label, attrs, expected] of categoryIsTheValue) {
+    it(`"${label}" asks for a category, and a category is what we have — ${expected}`, () => {
+      expect(fills(`<label for="f">${label}</label><select id="f" ${attrs}></select>`)).toBe(expected);
+    });
+  }
+
+  /** …and the words that only *look* like the trap must keep working */
+  const stillPhones: [string, string][] = [
+    ['Phone number', 'name="phone_number"'],
+    ['Telefonní číslo', 'name="telefonni_cislo"'],
+    ['Mobile phone', 'name="mobile_phone"'],
+    ['Mobilní telefon', 'name="mobilni_telefon"'],
+    ['Mobile/Alternate Phone', 'name="alternate_phone"'],
+    ['Contact number', 'name="contact_number"'],
+    ['Typing speed (words per minute)', 'name="phone"'],
+  ];
+  for (const [label, attrs] of stillPhones) {
+    it(`"${label}" is still a phone — no "type" in it`, () => {
+      expect(fills(labelled(label, attrs))).toBe('phone');
+    });
+  }
+});
+
+/**
+ * The 16 new types were added next to 14 existing ones, and every collision
+ * below is between a pair that shares a word, a shape or a data class. Each row
+ * asserts both halves: what the field IS, and what it must never be mistaken
+ * for. `null` means "recognised or not, never written".
+ */
+describe('new types vs. their neighbours', () => {
+  const traps: [string, string, FieldType | null, FieldType[]][] = [
+    // the exact failure seen on the live form: three name parts in a row
+    ['Legal MiddleName', 'name="middle_name"', 'middleName', ['firstName', 'lastName', 'fullName']],
+    ['Middle name', 'name="middle_name"', 'middleName', ['firstName', 'lastName']],
+    ['Prostřední jméno', 'name="a3f9c1"', 'middleName', ['firstName', 'fullName']],
+    ['Legal FirstName', 'name="first_name"', 'firstName', ['middleName', 'fullName']],
+    ['Křestní jméno', 'name="a3f9c1"', 'firstName', ['middleName']],
+    ['Legal LastName', 'name="last_name"', 'lastName', ['middleName', 'fullName']],
+    // a nickname is neither the surname nor the whole legal name
+    ['Preferred Name', 'name="preferred_name"', 'preferredName', ['lastName', 'fullName', 'firstName']],
+    ['Přezdívka', 'name="a3f9c1"', 'preferredName', ['fullName', 'firstName']],
+    ['Full name', 'name="name"', 'fullName', ['preferredName', 'middleName']],
+    // Jr. / Ph.D. is not a surname
+    ['Suffix', 'name="name_suffix"', 'nameSuffix', ['lastName', 'fullName']],
+    ['Name suffix', 'name="suffix"', 'nameSuffix', ['lastName', 'fullName']],
+    ['Titul za jménem', 'name="a3f9c1"', 'nameSuffix', ['lastName', 'fullName']],
+    // the three levels of geography
+    ['Country', 'name="country"', 'country', ['city', 'state', 'addressLine1']],
+    ['Země', 'name="a3f9c1"', 'country', ['city', 'state']],
+    ['State / Province / County', 'name="state"', 'state', ['city', 'country']],
+    ['Kraj', 'name="kraj"', 'state', ['city', 'country']],
+    ['City', 'name="city"', 'city', ['country', 'state', 'addressLine1']],
+    ['Město', 'name="a3f9c1"', 'city', ['country', 'state']],
+    // digits that are not a phone number, and a street that is not a postcode
+    ['Zip/ Postal Code', 'name="postal_code"', 'postalCode', ['phone', 'addressLine1', 'addressLine2']],
+    ['PSČ', 'name="a3f9c1"', 'postalCode', ['phone', 'addressLine1']],
+    ['Phone number', 'name="phone_number"', 'phone', ['postalCode']],
+    ['Address Line 1', 'name="address_line_1"', 'addressLine1', ['postalCode', 'addressLine2', 'city']],
+    ['Address Line 2', 'name="address_line_2"', 'addressLine2', ['addressLine1', 'postalCode']],
+    // two dates, and the pair of mistakes is not symmetrical: a start date in
+    // "Date of birth" leaks nothing, a birth date in "When can you start?" does
+    ['Date of birth', 'name="date_of_birth"', 'dateOfBirth', ['availability']],
+    ['Datum narození', 'name="a3f9c1"', 'dateOfBirth', ['availability', 'city']],
+    ['When can you start?', 'name="a3f9c1"', 'availability', ['dateOfBirth']],
+    ['Kdy můžete nastoupit?', 'name="a3f9c1"', 'availability', ['dateOfBirth']],
+    ['Start date', 'name="start_date"', 'availability', ['dateOfBirth']],
+    // the employer rule must not reach into the owner contexts that already
+    // disqualify everything else (czOwnedField / LINK_OWNER / ORG)
+    ['Current employer', 'name="current_employer"', 'currentEmployer', ['fullName', 'currentTitle']],
+    ['Zaměstnavatel', 'name="a3f9c1"', 'currentEmployer', ['fullName', 'firstName']],
+    ['Company name', 'name="company_name"', null, ['currentEmployer', 'fullName']],
+    ['Jméno společnosti', 'name="a3f9c1"', null, ['currentEmployer', 'firstName', 'fullName']],
+    ['Company website', 'name="company_website"', null, ['currentEmployer', 'website']],
+    ['Web společnosti', 'name="a3f9c1"', null, ['currentEmployer', 'website']],
+    ['Company LinkedIn', 'name="company_linkedin"', null, ['currentEmployer', 'linkedin']],
+    // two numbers
+    ['Years of experience', 'name="years_of_experience"', 'yearsOfExperience', ['salary']],
+    ['Roky praxe', 'name="a3f9c1"', 'yearsOfExperience', ['salary']],
+    ['Salary expectations', 'name="salary"', 'salary', ['yearsOfExperience']],
+    ['Platové očekávání', 'name="a3f9c1"', 'salary', ['yearsOfExperience']],
+  ];
+
+  for (const [label, attrs, expected, notThese] of traps) {
+    it(`"${label}" → ${expected ?? 'nothing'}, never ${notThese.join(' / ')}`, () => {
+      const filled = fills(labelled(label, attrs));
+      expect(filled).toBe(expected);
+      for (const notThis of notThese) expect(filled).not.toBe(notThis);
+    });
+  }
 });
 
 describe('scorer — margin over the runner-up (P1-3)', () => {
@@ -1396,6 +1601,125 @@ describe('Workday (realistic markup)', () => {
   });
 });
 
+/**
+ * The form the extension was actually run on. Every expectation below is a line
+ * from that run's report; the fixture exists so the report can never regress
+ * silently. What it looked like before this expansion:
+ *
+ *   Legal FirstName          firstName/45/medium    (only via the attribute)
+ *   Legal MiddleName         —
+ *   Legal LastName           lastName/45/medium
+ *   Preferred Name           —
+ *   Suffix                   fullName/50/medium     ← the candidate's NAME
+ *   Phone Type               phone/60/medium        ← the candidate's NUMBER
+ *   Mobile/Alternate Phone   phone/45/medium
+ *   Country / Address Line 1 / Address Line 2 /
+ *   State / Zip / Preferred Language / education    —
+ */
+describe('Workday "My Information" — the live form, field by field', () => {
+  let doc: Document;
+  let byAutomationId: Record<string, string | null>;
+  beforeEach(() => {
+    doc = loadFixture('workday-personal');
+    byAutomationId = classifyFixture('workday-personal');
+  });
+
+  it('enumerates all nineteen controls, selects included', () => {
+    expect(enumerateFillable(doc)).toHaveLength(19);
+    expect(doc.querySelectorAll('select')).toHaveLength(8);
+  });
+
+  it('classifies every field the run reported as unrecognised', () => {
+    expect(byAutomationId).toEqual({
+      legalNameSection_firstName: 'firstName',
+      legalNameSection_middleName: 'middleName',
+      legalNameSection_lastName: 'lastName',
+      personalInfoSection_preferredName: 'preferredName',
+      legalNameSection_socialSuffix: 'nameSuffix',
+      email: 'email',
+      'phone-number': 'phone',
+      // the bug: a Mobile / Home / Work selector
+      'phone-device-type': null,
+      alternatePhone: 'phone',
+      addressSection_country: 'country',
+      addressSection_addressLine1: 'addressLine1',
+      addressSection_addressLine2: 'addressLine2',
+      addressSection_city: 'city',
+      addressSection_countryRegion: 'state',
+      addressSection_postalCode: 'postalCode',
+      languagePreference: 'preferredLanguage',
+      'primaryQuestionnaire--question1': 'education',
+      // age questions: not seniority, not a birth date, not an essay
+      'primaryQuestionnaire--question2': null,
+      'primaryQuestionnaire--question3': null,
+    });
+  });
+
+  it('never writes a phone number into the Phone Type selector', () => {
+    const el = doc.querySelector('[data-automation-id="phone-device-type"]') as HTMLSelectElement;
+    const fp = buildFingerprint(el);
+    // the evidence that made it score 60 is all still there…
+    expect(fp.labelText).toContain('Phone Type');
+    expect(fp.semanticName).toBe('phone device type');
+    // …and the rule is disqualified anyway
+    expect(scoreField(fp)).toBeNull();
+  });
+
+  it('never writes the candidate\'s name into the Suffix selector', () => {
+    const el = doc.querySelector('[data-automation-id="legalNameSection_socialSuffix"]') as HTMLSelectElement;
+    const fp = buildFingerprint(el);
+    // "Legal Name" arrives twice — as the section heading and in the attribute
+    expect(fp.contextHeading).toBe('Legal Name');
+    expect(fp.semanticName).toContain('legal name');
+    expect(scoreField(fp)?.fieldType).toBe('nameSuffix');
+  });
+
+  it('keeps the three legal-name parts apart, in DOM order', () => {
+    const parts = ['firstName', 'middleName', 'lastName'].map(
+      (part) =>
+        scoreField(
+          buildFingerprint(
+            doc.querySelector(`[data-automation-id="legalNameSection_${part}"]`) as HTMLInputElement,
+          ),
+        )?.fieldType,
+    );
+    expect(parts).toEqual(['firstName', 'middleName', 'lastName']);
+  });
+
+  it('resolves State and Country apart, though Workday calls the state "countryRegion"', () => {
+    const state = doc.querySelector('[data-automation-id="addressSection_countryRegion"]') as HTMLSelectElement;
+    const fp = buildFingerprint(state);
+    expect(fp.semanticName).toBe('address section country region');
+    expect(scoreField(fp)?.fieldType).toBe('state');
+    expect(scoreField(buildFingerprint(doc.querySelector('[data-automation-id="addressSection_country"]') as HTMLSelectElement))?.fieldType).toBe('country');
+  });
+
+  it('fills the education question from its 51-character label alone', () => {
+    const el = doc.querySelector('[data-automation-id="primaryQuestionnaire--question1"]') as HTMLSelectElement;
+    const fp = buildFingerprint(el);
+    // the attribute is opaque; the label is the only evidence there is
+    expect(fp.semanticName).toBe('primary questionnaire question1');
+    const match = scoreField(fp);
+    expect(match?.fieldType).toBe('education');
+    expect(match?.score).toBe(MEDIUM_THRESHOLD);
+  });
+
+  it('leaves both age questions alone — "years of age" is not seniority', () => {
+    for (const q of ['question2', 'question3']) {
+      const el = doc.querySelector(`[data-automation-id="primaryQuestionnaire--${q}"]`) as HTMLSelectElement;
+      expect(scoreField(buildFingerprint(el)), q).toBeNull();
+    }
+  });
+
+  it('every filled field is a clear winner, not a coin toss', () => {
+    for (const el of enumerateFillable(doc)) {
+      const match = scoreField(buildFingerprint(el));
+      if (!match) continue;
+      expect(match.confidence, `${el.getAttribute('data-automation-id')} was downgraded`).not.toBe('low');
+    }
+  });
+});
+
 describe('Lever (realistic markup)', () => {
   let byName: Record<string, string | null>;
   beforeEach(() => {
@@ -1416,8 +1740,17 @@ describe('Lever (realistic markup)', () => {
     expect(byName['urls[Portfolio]']).toBe('website');
   });
 
-  it('leaves "Current company" alone', () => {
-    expect(byName.org).toBeNull();
+  /**
+   * Was: `byName.org` is null — the fixture's own comment calls "Current
+   * company" a trap "for the fullName / website rules", and it still is: the
+   * candidate's *name* must never go here. What changed is that the profile now
+   * has a `currentEmployer` to put in it, so the field is filled with the right
+   * thing rather than left empty. Both halves are asserted.
+   */
+  it('fills "Current company" with the employer — and never with the candidate', () => {
+    expect(byName.org).toBe('currentEmployer');
+    expect(byName.org).not.toBe('fullName');
+    expect(byName.org).not.toBe('website');
   });
 
   it('routes the opaque custom question to the AI path via its sibling div', () => {
@@ -1708,18 +2041,18 @@ const COVERAGE: [FieldType, string, string][] = [
   ['availability', 'Dostupnost', 'input'],
   ['availability', 'K dispozici od', 'input'],
 
-  // ── workPermit ──
+  // ── workPermit. The four citizenship phrasings that used to live here moved
+  //    to `nationality` below: they now have a profile field of their own, and
+  //    leaving them in both rules would be a permanent tie. ──
   ['workPermit', 'Work permit', 'input'],
   ['workPermit', 'Visa status', 'input'],
-  ['workPermit', 'Citizenship', 'input'],
-  ['workPermit', 'Nationality', 'input'],
+  ['workPermit', 'Visa type', 'input'],
   ['workPermit', 'Right to work', 'input'],
+  ['workPermit', 'Work authorization', 'input'],
   ['workPermit', 'Do you require sponsorship?', 'input'],
   ['workPermit', 'Are you legally authorized to work?', 'input'],
   ['workPermit', 'Pracovní povolení', 'input'],
   ['workPermit', 'Povolení k pobytu', 'input'],
-  ['workPermit', 'Občanství', 'input'],
-  ['workPermit', 'Státní příslušnost', 'input'],
   ['workPermit', 'Modrá karta', 'input'],
   ['workPermit', 'Zaměstnanecká karta', 'input'],
   ['workPermit', 'Víza', 'input'],
@@ -1737,6 +2070,224 @@ const COVERAGE: [FieldType, string, string][] = [
   ['about', 'Shrnutí', 'textarea'],
   ['about', 'Krátké představení', 'textarea'],
   ['about', 'Profil', 'textarea'],
+
+  // ── middleName: the field the live run reported as NOT RECOGNISED ──
+  ['middleName', 'Middle name', 'input'],
+  ['middleName', 'Middle Name *', 'input'],
+  ['middleName', 'Middle names', 'input'],
+  ['middleName', 'Middle initial', 'input'],
+  ['middleName', 'Additional name', 'input'],
+  ['middleName', 'Second given name', 'input'],
+  ['middleName', 'Prostřední jméno', 'input'],
+  ['middleName', 'Prostredni jmeno', 'input'],
+  ['middleName', 'Druhé jméno', 'input'],
+  ['middleName', 'Stredné meno', 'input'],
+  ['middleName', 'Vyplňte prostřední jméno', 'input'],
+
+  // ── preferredName ──
+  ['preferredName', 'Preferred name', 'input'],
+  ['preferredName', 'Preferred Name', 'input'],
+  ['preferredName', 'Preferred first name', 'input'],
+  ['preferredName', 'Chosen name', 'input'],
+  ['preferredName', 'Nickname', 'input'],
+  ['preferredName', 'Nick name', 'input'],
+  ['preferredName', 'Known as', 'input'],
+  ['preferredName', 'How should we call you?', 'input'],
+  ['preferredName', 'What should we call you?', 'input'],
+  ['preferredName', 'Přezdívka', 'input'],
+  ['preferredName', 'Preferované jméno', 'input'],
+
+  // ── nameSuffix ──
+  ['nameSuffix', 'Suffix', 'input'],
+  ['nameSuffix', 'Name suffix', 'input'],
+  ['nameSuffix', 'Suffix name', 'input'],
+  ['nameSuffix', 'Social suffix', 'input'],
+  ['nameSuffix', 'Generational suffix', 'input'],
+  ['nameSuffix', 'Professional suffix', 'input'],
+  ['nameSuffix', 'Post-nominals', 'input'],
+  ['nameSuffix', 'Title after name', 'input'],
+  ['nameSuffix', 'Titul za jménem', 'input'],
+  ['nameSuffix', 'Titul za menom', 'input'],
+
+  // ── addressLine1 ──
+  ['addressLine1', 'Address Line 1', 'input'],
+  ['addressLine1', 'Address line one', 'input'],
+  ['addressLine1', 'Address 1', 'input'],
+  ['addressLine1', 'Street address', 'input'],
+  ['addressLine1', 'Street', 'input'],
+  ['addressLine1', 'Street name', 'input'],
+  ['addressLine1', 'House number', 'input'],
+  ['addressLine1', 'Home address', 'input'],
+  ['addressLine1', 'Permanent address', 'input'],
+  ['addressLine1', 'Mailing address', 'input'],
+  ['addressLine1', 'Residential address', 'input'],
+  ['addressLine1', 'Ulice', 'input'],
+  ['addressLine1', 'Ulice a číslo popisné', 'input'],
+  ['addressLine1', 'Ulica', 'input'],
+  ['addressLine1', 'Trvalá adresa', 'input'],
+  ['addressLine1', 'Kontaktní adresa', 'input'],
+
+  // ── addressLine2 ──
+  ['addressLine2', 'Address Line 2', 'input'],
+  ['addressLine2', 'Address line two', 'input'],
+  ['addressLine2', 'Address 2', 'input'],
+  ['addressLine2', 'Apartment', 'input'],
+  ['addressLine2', 'Apartment, suite, etc.', 'input'],
+  ['addressLine2', 'Apt', 'input'],
+  ['addressLine2', 'Suite', 'input'],
+  ['addressLine2', 'Suite number', 'input'],
+  ['addressLine2', 'Additional address', 'input'],
+  ['addressLine2', 'Doplňující adresa', 'input'],
+  ['addressLine2', 'Číslo bytu', 'input'],
+
+  // ── postalCode ──
+  ['postalCode', 'Zip', 'input'],
+  ['postalCode', 'Zip code', 'input'],
+  ['postalCode', 'Zip/ Postal Code', 'input'],
+  ['postalCode', 'Postal code', 'input'],
+  ['postalCode', 'Postcode', 'input'],
+  ['postalCode', 'Post code', 'input'],
+  ['postalCode', 'PSČ', 'input'],
+  ['postalCode', 'PSC', 'input'],
+  ['postalCode', 'Poštovní směrovací číslo', 'input'],
+  ['postalCode', 'Směrovací číslo', 'input'],
+
+  // ── state ──
+  ['state', 'State', 'input'],
+  ['state', 'State/Province', 'input'],
+  ['state', 'State / Province / County', 'input'],
+  ['state', 'State or province', 'input'],
+  ['state', 'Province', 'input'],
+  ['state', 'County', 'input'],
+  ['state', 'Territory', 'input'],
+  ['state', 'Kraj', 'input'],
+  ['state', 'Okres', 'input'],
+  ['state', 'Samosprávný kraj', 'input'],
+
+  // ── country ──
+  ['country', 'Country', 'input'],
+  ['country', 'Country/Region', 'input'],
+  ['country', 'Country of residence', 'input'],
+  ['country', 'Home country', 'input'],
+  ['country', 'Current country', 'input'],
+  ['country', 'Nation', 'input'],
+  ['country', 'Země', 'input'],
+  ['country', 'Stát', 'input'],
+  ['country', 'Štát', 'input'],
+  ['country', 'Krajina', 'input'],
+
+  // ── nationality ──
+  ['nationality', 'Nationality', 'input'],
+  ['nationality', 'Citizenship', 'input'],
+  ['nationality', 'Citizen', 'input'],
+  ['nationality', 'Country of citizenship', 'input'],
+  ['nationality', 'Country of nationality', 'input'],
+  ['nationality', 'Národnost', 'input'],
+  ['nationality', 'Občanství', 'input'],
+  ['nationality', 'Občianstvo', 'input'],
+  ['nationality', 'Státní příslušnost', 'input'],
+  ['nationality', 'Štátna príslušnosť', 'input'],
+
+  // ── dateOfBirth ──
+  ['dateOfBirth', 'Date of birth', 'input'],
+  ['dateOfBirth', 'Birth date', 'input'],
+  ['dateOfBirth', 'Birthdate', 'input'],
+  ['dateOfBirth', 'Birthday', 'input'],
+  ['dateOfBirth', 'DOB', 'input'],
+  ['dateOfBirth', 'Date born', 'input'],
+  ['dateOfBirth', 'Year of birth', 'input'],
+  ['dateOfBirth', 'Datum narození', 'input'],
+  ['dateOfBirth', 'Datum narozeni', 'input'],
+  ['dateOfBirth', 'Den narození', 'input'],
+  ['dateOfBirth', 'Dátum narodenia', 'input'],
+
+  // ── drivingLicence ──
+  ['drivingLicence', 'Driving licence', 'input'],
+  ['drivingLicence', 'Driving license', 'input'],
+  ["drivingLicence", "Driver's license", 'input'],
+  ['drivingLicence', 'Drivers licence', 'input'],
+  ['drivingLicence', 'Driving licence category', 'input'],
+  ['drivingLicence', 'Driving license class', 'input'],
+  ['drivingLicence', 'Full driving licence', 'input'],
+  ['drivingLicence', 'Řidičský průkaz', 'input'],
+  ['drivingLicence', 'Ridicsky prukaz', 'input'],
+  ['drivingLicence', 'Řidičské oprávnění', 'input'],
+  ['drivingLicence', 'ŘP', 'input'],
+  ['drivingLicence', 'Vodičský preukaz', 'input'],
+
+  // ── education ──
+  ['education', 'Education', 'input'],
+  ['education', 'Education level', 'input'],
+  ['education', 'Highest level of education', 'input'],
+  ['education', 'Please list your highest level of education achieved', 'input'],
+  ['education', 'Highest degree', 'input'],
+  ['education', 'Degree', 'input'],
+  ['education', 'Qualification', 'input'],
+  ['education', 'Academic background', 'input'],
+  ['education', 'Vzdělání', 'input'],
+  ['education', 'Nejvyšší dosažené vzdělání', 'input'],
+  ['education', 'Dosažené vzdělání', 'input'],
+  ['education', 'Stupeň vzdělání', 'input'],
+  ['education', 'Vzdelanie', 'input'],
+
+  // ── preferredLanguage ──
+  ['preferredLanguage', 'Preferred Language', 'input'],
+  ['preferredLanguage', 'Language', 'input'],
+  ['preferredLanguage', 'Language preference', 'input'],
+  ['preferredLanguage', 'Primary language', 'input'],
+  ['preferredLanguage', 'Native language', 'input'],
+  ['preferredLanguage', 'Communication language', 'input'],
+  ['preferredLanguage', 'Language of correspondence', 'input'],
+  ['preferredLanguage', 'Jazyk', 'input'],
+  ['preferredLanguage', 'Preferovaný jazyk', 'input'],
+  ['preferredLanguage', 'Komunikační jazyk', 'input'],
+  ['preferredLanguage', 'Jazyková preference', 'input'],
+  ['preferredLanguage', 'Mateřský jazyk', 'input'],
+
+  // ── currentTitle ──
+  ['currentTitle', 'Current title', 'input'],
+  ['currentTitle', 'Current job title', 'input'],
+  ['currentTitle', 'Job title', 'input'],
+  ['currentTitle', 'Current position', 'input'],
+  ['currentTitle', 'Present position', 'input'],
+  ['currentTitle', 'Most recent role', 'input'],
+  ['currentTitle', 'Occupation title', 'input'],
+  ['currentTitle', 'Professional title', 'input'],
+  ['currentTitle', 'Současná pozice', 'input'],
+  ['currentTitle', 'Aktuální pozice', 'input'],
+  ['currentTitle', 'Nynější pozice', 'input'],
+  ['currentTitle', 'Poslední pozice', 'input'],
+  ['currentTitle', 'Pracovní zařazení', 'input'],
+  ['currentTitle', 'Vaše současná pozice', 'input'],
+
+  // ── currentEmployer ──
+  ['currentEmployer', 'Current employer', 'input'],
+  ['currentEmployer', 'Current company', 'input'],
+  ['currentEmployer', 'Present employer', 'input'],
+  ['currentEmployer', 'Most recent employer', 'input'],
+  ['currentEmployer', 'Latest company', 'input'],
+  ['currentEmployer', 'Employer', 'input'],
+  ['currentEmployer', 'Employer name', 'input'],
+  ['currentEmployer', 'Who do you currently work for?', 'input'],
+  ['currentEmployer', 'Zaměstnavatel', 'input'],
+  ['currentEmployer', 'Současný zaměstnavatel', 'input'],
+  ['currentEmployer', 'Současné zaměstnání', 'input'],
+  ['currentEmployer', 'Aktuální zaměstnavatel', 'input'],
+  ['currentEmployer', 'Zamestnávateľ', 'input'],
+
+  // ── yearsOfExperience ──
+  ['yearsOfExperience', 'Years of experience', 'input'],
+  ['yearsOfExperience', 'Total years of experience', 'input'],
+  ['yearsOfExperience', 'Years of relevant experience', 'input'],
+  ['yearsOfExperience', 'How many years of experience do you have?', 'input'],
+  ['yearsOfExperience', 'Years experience', 'input'],
+  ['yearsOfExperience', 'Experience (years)', 'input'],
+  ['yearsOfExperience', 'Number of years of experience', 'input'],
+  ['yearsOfExperience', 'Praxe', 'input'],
+  ['yearsOfExperience', 'Roky praxe', 'input'],
+  ['yearsOfExperience', 'Počet let praxe', 'input'],
+  ['yearsOfExperience', 'Délka praxe', 'input'],
+  ['yearsOfExperience', 'Let zkušeností', 'input'],
 ];
 
 describe('vocabulary coverage — a label alone must be enough', () => {
@@ -1746,9 +2297,37 @@ describe('vocabulary coverage — a label alone must be enough', () => {
     });
   }
 
-  it('covers at least 120 distinct phrasings across all 14 rules', () => {
-    expect(new Set(COVERAGE.map(([, label]) => label)).size).toBeGreaterThanOrEqual(120);
+  it('covers at least 280 distinct phrasings across every rule', () => {
+    expect(new Set(COVERAGE.map(([, label]) => label)).size).toBeGreaterThanOrEqual(280);
     expect(new Set(COVERAGE.map(([type]) => type)).size).toBe(FIELD_RULES.length);
+  });
+
+  /**
+   * The brief for the 16 new types was "the same breadth as the existing rules,
+   * at least 8 phrasings each, English *and* Czech/Slovak". Pinned rather than
+   * trusted: a rule that quietly loses its Czech half still passes every
+   * individual row above, and would then be useless on the primary market.
+   *
+   * (Not asserted for the older rules: `github` and `linkedin` are single
+   * proper nouns and have nothing like eight spellings between them.)
+   */
+  it('gives each of the 16 new types ≥8 phrasings, in both languages', () => {
+    const NEW_TYPES: FieldType[] = [
+      'middleName', 'preferredName', 'nameSuffix',
+      'addressLine1', 'addressLine2', 'postalCode', 'state', 'country',
+      'nationality', 'dateOfBirth', 'drivingLicence', 'education', 'preferredLanguage',
+      'currentTitle', 'currentEmployer', 'yearsOfExperience',
+    ];
+    // diacritics, or one of the ASCII-only Czech/Slovak spellings used above
+    const CZECH = /[áčďéěíňóřšťúůýžĺľôŕ]|^(?:PSC|Praxe|Ulica|Okres|Kraj|Prostredni jmeno|Datum narozeni|Ridicsky prukaz|Vzdelanie)$/i;
+
+    expect(NEW_TYPES).toHaveLength(16);
+    for (const type of NEW_TYPES) {
+      const rows = COVERAGE.filter(([t]) => t === type).map(([, label]) => label);
+      expect(rows.length, `${type} is under-covered`).toBeGreaterThanOrEqual(8);
+      expect(rows.some((label) => CZECH.test(label)), `${type} has no Czech/Slovak row`).toBe(true);
+      expect(rows.some((label) => !CZECH.test(label)), `${type} has no English row`).toBe(true);
+    }
   });
 });
 
@@ -1796,8 +2375,46 @@ const ATTRIBUTE_COVERAGE: [FieldType, string][] = [
   ['coverLetter', 'coverLetter'],
   ['coverLetter', 'motivacni_dopis'],
   ['availability', 'termin_nastupu'],
-  ['workPermit', 'obcanstvi'],
+  ['workPermit', 'work_permit'],
   ['about', 'o_sobe'],
+  // the 16 new types, in the attribute spellings the big ATS actually ship
+  ['middleName', 'middle_name'],
+  ['middleName', 'middleName'],
+  ['middleName', 'legalNameSection_middleName'],
+  ['preferredName', 'preferred_name'],
+  ['preferredName', 'preferredName'],
+  ['preferredName', 'nickname'],
+  ['nameSuffix', 'name_suffix'],
+  ['nameSuffix', 'legalNameSection_socialSuffix'],
+  ['addressLine1', 'address_line_1'],
+  ['addressLine1', 'addressSection_addressLine1'],
+  ['addressLine1', 'street_address'],
+  ['addressLine2', 'address_line_2'],
+  ['addressLine2', 'addressSection_addressLine2'],
+  ['postalCode', 'postal_code'],
+  ['postalCode', 'addressSection_postalCode'],
+  ['postalCode', 'zip'],
+  ['state', 'candidate[state]'],
+  ['state', 'province'],
+  ['country', 'addressSection_country'],
+  ['country', 'candidate[country]'],
+  ['nationality', 'obcanstvi'],
+  ['nationality', 'nationality'],
+  ['dateOfBirth', 'date_of_birth'],
+  ['dateOfBirth', 'dateOfBirth'],
+  ['dateOfBirth', 'datum_narozeni'],
+  ['drivingLicence', 'driving_licence'],
+  ['drivingLicence', 'ridicsky_prukaz'],
+  ['education', 'education'],
+  ['education', 'vzdelani'],
+  ['preferredLanguage', 'preferred_language'],
+  ['preferredLanguage', 'languagePreference'],
+  ['currentTitle', 'current_title'],
+  ['currentTitle', 'job_title'],
+  ['currentEmployer', 'current_employer'],
+  ['currentEmployer', 'zamestnavatel'],
+  ['yearsOfExperience', 'years_of_experience'],
+  ['yearsOfExperience', 'roky_praxe'],
 ];
 
 describe('vocabulary coverage — attribute spellings', () => {
@@ -1867,6 +2484,68 @@ const NEVER_FILLED: [string, string, string][] = [
   ['phone', 'Telegram', 'input'],
   ['phone', 'Intel experience', 'input'],
   ['salary', 'Platforma', 'input'],
+
+  // ── the new types, against the fields they sit next to ──
+  // category selectors: the field asks which KIND of value, not for the value
+  ['phone', 'Phone Type', 'input'],
+  ['phone', 'Phone Device Type', 'input'],
+  ['phone', 'Typ telefonu', 'input'],
+  ['email', 'Email Type', 'input'],
+  ['fullName', 'Name Type', 'input'],
+  ['addressLine1', 'Address Type', 'input'],
+  ['addressLine1', 'Druh adresy', 'input'],
+  ['currentEmployer', 'Employer type', 'input'],
+  // an employer's attributes are not its name
+  ['currentEmployer', 'Company name', 'input'],
+  ['currentEmployer', 'Company website', 'input'],
+  ['currentEmployer', 'Company LinkedIn', 'input'],
+  ['currentEmployer', 'Jméno společnosti', 'input'],
+  ['currentEmployer', 'Firemní web', 'input'],
+  ['currentEmployer', 'Previous employer', 'input'],
+  ['currentEmployer', 'Předchozí zaměstnavatel', 'input'],
+  // the vacancy, not the candidate's own job
+  ['currentTitle', 'Position applied for', 'input'],
+  ['currentTitle', 'Desired position', 'input'],
+  ['currentTitle', 'Job location', 'input'],
+  ['currentTitle', 'Job description', 'input'],
+  ['currentTitle', 'Pozice, o kterou se ucházíte', 'input'],
+  // a level, not an institution or a date
+  ['education', 'School name', 'input'],
+  ['education', 'University name', 'input'],
+  ['education', 'Education end date', 'input'],
+  ['education', 'Graduation date', 'input'],
+  ['education', 'Field of study', 'input'],
+  // a language skill is not a language preference
+  ['preferredLanguage', 'Language skills', 'input'],
+  ['preferredLanguage', 'Jazykové znalosti', 'input'],
+  ['preferredLanguage', 'Programming language', 'input'],
+  ['preferredLanguage', 'Úroveň jazyka', 'input'],
+  // other people's dates of birth, and other birth facts
+  ['dateOfBirth', 'Place of birth', 'input'],
+  ['dateOfBirth', 'Místo narození', 'input'],
+  ['dateOfBirth', 'Rodné číslo', 'input'],
+  ['dateOfBirth', "Child's date of birth", 'input'],
+  // an age question is not a seniority one
+  ['yearsOfExperience', 'Are you at least 18 years of age?', 'input'],
+  ['yearsOfExperience', 'Are you 40 years of age or older?', 'input'],
+  ['yearsOfExperience', 'User experience', 'input'],
+  // other kinds of code and of address
+  ['postalCode', 'Country code', 'input'],
+  ['postalCode', 'Verification code', 'input'],
+  ['postalCode', 'Promo code', 'input'],
+  ['addressLine1', 'Email address', 'input'],
+  ['addressLine1', 'IP address', 'input'],
+  ['addressLine1', 'Billing address', 'input'],
+  ['addressLine1', 'Address Line 2', 'input'],
+  // a licence that is not a driving one
+  ['drivingLicence', 'Software license', 'input'],
+  ['drivingLicence', 'License plate', 'input'],
+  // somebody else's identity
+  ['middleName', 'Emergency contact middle name', 'input'],
+  ['preferredName', 'Username', 'input'],
+  ['preferredName', 'Display name', 'input'],
+  ['nameSuffix', 'File suffix', 'input'],
+  ['nationality', 'Reference nationality', 'input'],
 ];
 
 describe('vocabulary coverage — nothing on the other side of the form is filled', () => {
@@ -1950,14 +2629,9 @@ describe('diacritics-aware word boundaries', () => {
 });
 
 describe('performance (NFR-3)', () => {
-  it('enumerates, fingerprints and scores 200 controls well inside 300 ms', () => {
+  /** Enumerate, fingerprint and score every control in `html`, returning the ms */
+  function timeFill(html: string): { elapsed: number; count: number } {
     const form = document.createElement('form');
-    let html = '<h2>Application</h2>';
-    for (let i = 0; i < 200; i++) {
-      html +=
-        `<div class="field"><div class="label">Field ${i}</div>` +
-        `<div class="control"><input id="f${i}" name="field_${i}" placeholder="Field ${i}" /></div></div>`;
-    }
     form.innerHTML = html;
     document.body.appendChild(form);
 
@@ -1966,7 +2640,41 @@ describe('performance (NFR-3)', () => {
     for (const el of elements) scoreField(buildFingerprint(el));
     const elapsed = performance.now() - started;
 
-    expect(elements).toHaveLength(200);
+    return { elapsed, count: elements.length };
+  }
+
+  it('enumerates, fingerprints and scores 200 controls well inside 300 ms', () => {
+    let html = '<h2>Application</h2>';
+    for (let i = 0; i < 200; i++) {
+      html +=
+        `<div class="field"><div class="label">Field ${i}</div>` +
+        `<div class="control"><input id="f${i}" name="field_${i}" placeholder="Field ${i}" /></div></div>`;
+    }
+
+    const { elapsed, count } = timeFill(html);
+    expect(count).toBe(200);
+    expect(elapsed).toBeLessThan(300);
+  });
+
+  /**
+   * The budget is spent on *misses*, not hits: a rule that matches stops at the
+   * first alternative, a rule that does not has to try all of them against all
+   * eight sources, twice (raw and diacritics-folded). Growing the dictionary
+   * from 14 rules to 30 therefore lands squarely on this test, so the worst case
+   * is pinned explicitly — 200 controls whose labels are long, accented and
+   * match nothing, i.e. 30 full misses each.
+   */
+  it('stays inside the budget for 200 controls that match no rule at all', () => {
+    let html = '<h2>Dotazník</h2>';
+    for (let i = 0; i < 200; i++) {
+      html +=
+        `<div class="field"><div class="label">Nesouvisející položka číslo ${i}</div>` +
+        `<div class="control"><input id="g${i}" name="polozka_${i}" ` +
+        `aria-label="Nesouvisející položka číslo ${i}" placeholder="Vyplňte položku ${i}" /></div></div>`;
+    }
+
+    const { elapsed, count } = timeFill(html);
+    expect(count).toBe(200);
     expect(elapsed).toBeLessThan(300);
   });
 });
