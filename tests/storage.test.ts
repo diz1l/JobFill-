@@ -44,7 +44,9 @@ const retryQueue = await import('../shared/storage/retryQueue');
 const { emptySyncData, normalizeSyncData, SyncValidationError } = await import(
   '../shared/storage/validate'
 );
-const { createEmptyProfile, DEFAULT_SETTINGS } = await import('../shared/types');
+const { createEmptyProfile, DEFAULT_SETTINGS, SYNC_SCHEMA_VERSION } = await import(
+  '../shared/types'
+);
 
 beforeEach(async () => {
   sync.data = {};
@@ -799,7 +801,7 @@ describe('snapshot reads', () => {
     await syncStore.saveSettings({ highlightDurationMs: 1234 });
 
     expect(await syncStore.getSyncSnapshot()).toEqual({
-      schemaVersion: 1,
+      schemaVersion: SYNC_SCHEMA_VERSION,
       profiles: [a],
       activeProfileId: a.id,
       coverTemplates: [{ id: 't', label: 'T', body: 'b' }],
@@ -1161,12 +1163,245 @@ describe('normalizeSyncData repairs a survivable file', () => {
 
   it('emptySyncData is what a fresh install reads', async () => {
     expect(emptySyncData()).toEqual({
-      schemaVersion: 1,
+      schemaVersion: SYNC_SCHEMA_VERSION,
       profiles: [],
       activeProfileId: '',
       coverTemplates: [],
       settings: DEFAULT_SETTINGS,
     });
     expect(await syncStore.getSyncSnapshot()).toEqual(emptySyncData());
+  });
+});
+
+// ─── Schema v1 → v2 ───────────────────────────────────────────────────────────
+
+/**
+ * The first real schema migration, and with it the first exercise of the
+ * migration loop in `validate.ts` — dormant while there was only one version.
+ *
+ * What has to hold is one sentence: **a v1 profile loses nothing.** It was
+ * written by a build that never asked about middle names, addresses or driving
+ * licences, so the upgrade is those entries arriving blank and every answer the
+ * user did give staying exactly as it was — in storage, and in a backup file
+ * they exported months ago and import today.
+ */
+describe('schema v1 → v2', () => {
+  /** A profile with every entry schema v1 had, and none that it did not. */
+  const v1Profile = {
+    id: 'v1-profile',
+    label: 'Frontend',
+    firstName: 'Dias',
+    lastName: 'Nurgaliyev',
+    email: 'dias@example.com',
+    phone: '+420123456789',
+    city: 'Praha, Czechia',
+    linkedin: 'https://www.linkedin.com/in/dias-nur',
+    github: 'https://github.com/diz1l',
+    website: 'https://dias.dev',
+    salaryExpectation: '80 000 Kč',
+    availability: '1 September',
+    workPermit: 'EU citizen',
+    about: 'I build things that work.',
+  };
+
+  const v1Export = {
+    schemaVersion: 1,
+    profiles: [v1Profile],
+    activeProfileId: 'v1-profile',
+    coverTemplates: [{ id: 't1', label: 'Default', body: 'Dear {company}' }],
+    settings: { highlightDurationMs: 3000, logBackend: 'off' },
+  };
+
+  /**
+   * `createEmptyProfile(v1Profile)` *is* the expected result, and says why in
+   * one line: the same answers, plus the v2 entries at their empty default.
+   */
+  const migrated = () => createEmptyProfile(v1Profile);
+
+  it('carries every v1 answer across and blanks nothing', () => {
+    const { data, issues } = normalizeSyncData(v1Export);
+
+    expect(data.schemaVersion).toBe(SYNC_SCHEMA_VERSION);
+    expect(data.profiles[0]).toEqual(migrated());
+    expect(data.activeProfileId).toBe('v1-profile');
+    expect(data.coverTemplates).toEqual(v1Export.coverTemplates);
+    // A v1 file is not a broken file: an upgrade is not worth a single warning.
+    expect(issues).toEqual([]);
+  });
+
+  it('leaves the new entries empty rather than inventing an answer for them', () => {
+    const [profile] = normalizeSyncData(v1Export).data.profiles;
+
+    expect(profile.middleName).toBe('');
+    expect(profile.preferredName).toBe('');
+    expect(profile.country).toBe('');
+    expect(profile.dateOfBirth).toBe('');
+    expect(profile.yearsOfExperience).toBe('');
+    // Notably *not* the given name — the guess this whole change is about.
+    expect(profile.preferredName).not.toBe(profile.firstName);
+  });
+
+  it('imports a v1 backup file, which is the case a user actually meets', async () => {
+    const report = await syncStore.importSyncData(JSON.stringify(v1Export));
+
+    expect(report.profiles).toBe(1);
+    expect(report.warnings).toEqual([]);
+    expect((await syncStore.getProfiles())[0]).toEqual(migrated());
+    // …and the store now says which layout it holds.
+    expect(sync.data['jobfill.schemaVersion']).toBe(SYNC_SCHEMA_VERSION);
+  });
+
+  it('re-exports what it imported, now at v2', async () => {
+    await syncStore.importSyncData(JSON.stringify(v1Export));
+    const dump = JSON.parse(await syncStore.exportSyncData());
+
+    expect(dump.schemaVersion).toBe(SYNC_SCHEMA_VERSION);
+    expect(dump.profiles[0]).toEqual(migrated());
+    // Idempotent: the v2 file it just wrote imports as itself.
+    await syncStore.importSyncData(JSON.stringify(dump));
+    expect((await syncStore.getProfiles())[0]).toEqual(migrated());
+  });
+
+  it('does not overwrite a v2 entry that is already there', () => {
+    const half = {
+      ...v1Export,
+      profiles: [{ ...v1Profile, middleName: 'Serik', country: 'CZ' }],
+    };
+    const [profile] = normalizeSyncData(half).data.profiles;
+
+    expect(profile.middleName).toBe('Serik');
+    expect(profile.country).toBe('CZ');
+  });
+
+  it('survives a v1 file whose profiles are not profiles', () => {
+    // The migration hands junk through untouched; `normalizeProfile` is what
+    // decides about it, exactly as it does for a v2 file.
+    const { data, issues } = normalizeSyncData({ ...v1Export, profiles: ['garbage', 42, null] });
+    expect(data.profiles).toEqual([]);
+    expect(issues.every((i) => i.severity === 'warning')).toBe(true);
+
+    // …and one that is not a list at all is still a broken file, not a v1 one.
+    expect(() => normalizeSyncData({ ...v1Export, profiles: 'oops' }, { strict: true })).toThrow(
+      /profiles.*expected an array/s,
+    );
+  });
+
+  it('still refuses a file from a version this build does not have', async () => {
+    await expect(
+      syncStore.importSyncData(JSON.stringify({ ...v1Export, schemaVersion: SYNC_SCHEMA_VERSION + 1 })),
+    ).rejects.toThrow(/newer version/);
+  });
+
+  it('upgrades the legacy single blob straight from v1 to v2', async () => {
+    sync.data['jobfill_sync'] = v1Export;
+
+    expect((await syncStore.getProfiles())[0]).toEqual(migrated());
+    expect(sync.data['jobfill_sync']).toBeUndefined();
+    expect(sync.data['jobfill.schemaVersion']).toBe(SYNC_SCHEMA_VERSION);
+  });
+
+  /**
+   * The split layout needs no rewrite at all — every key a v1 build wrote is a
+   * valid v2 item, because an absent entry reads as empty. Only the stamp is
+   * stale, and spending the sync write quota on rewriting profiles to add empty
+   * strings would change nothing a reader can see.
+   */
+  it('re-stamps a split v1 store without rewriting its profiles', async () => {
+    const stored = { ...v1Profile };
+    sync.data['jobfill.schemaVersion'] = 1;
+    sync.data['jobfill.profileIds'] = [stored.id];
+    sync.data[`jobfill.profile.${stored.id}`] = stored;
+    sync.data['jobfill.activeProfileId'] = stored.id;
+
+    expect((await syncStore.getProfiles())[0]).toEqual(migrated());
+    expect(sync.data['jobfill.schemaVersion']).toBe(SYNC_SCHEMA_VERSION);
+    // The item itself is untouched until the user next saves that profile.
+    expect(sync.data[`jobfill.profile.${stored.id}`]).toEqual(stored);
+  });
+
+  it('writes nothing when the stamp is already current', async () => {
+    await syncStore.saveProfiles([createEmptyProfile({ label: 'A' })]);
+
+    const spy = vi.spyOn(sync, 'set');
+    expect(await syncStore.getProfiles()).toHaveLength(1);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
+// ─── Quota, with the v2 profile ───────────────────────────────────────────────
+
+/**
+ * `chrome.storage.sync` caps a *single item* at 8 KB, and since the key-per-
+ * entity split that item is one profile. Sixteen new entries move the number,
+ * so it is measured here rather than assumed: a profile in which every box is
+ * filled in — including an "About" paragraph, the only entry with no natural
+ * length — has to sit far enough below the ceiling that no realistic user can
+ * reach it by typing.
+ */
+describe('a fully written-out profile against the sync quota (FR-1.2)', () => {
+  const full = () =>
+    createEmptyProfile({
+      label: 'Frontend — Praha',
+      firstName: 'Dias',
+      middleName: 'Serikuly',
+      lastName: 'Nurgaliyev',
+      preferredName: 'Dee',
+      nameSuffix: 'Jr.',
+      email: 'dias.nurgaliyev@example.com',
+      phone: '+420123456789',
+      linkedin: 'https://www.linkedin.com/in/dias-nurgaliyev',
+      github: 'https://github.com/diz1l',
+      website: 'https://dias.dev',
+      addressLine1: 'Vinohradská 1511/230',
+      addressLine2: 'byt 4, 3. patro',
+      city: 'Praha, Czechia',
+      state: 'Hlavní město Praha',
+      postalCode: '100 00',
+      country: 'Czechia',
+      nationality: 'Kazakhstani',
+      dateOfBirth: '1990-03-15',
+      workPermit: 'EU citizen — no sponsorship required',
+      education: "Master's degree",
+      drivingLicence: 'ŘP skupiny B',
+      preferredLanguage: 'English',
+      currentTitle: 'Senior Frontend Engineer',
+      currentEmployer: 'Acme Solutions s.r.o.',
+      yearsOfExperience: '5+',
+      salaryExpectation: '80 000 Kč / month',
+      availability: '1 September, two months notice',
+      about:
+        'Frontend engineer with five years of experience building browser extensions and ' +
+        'design systems in TypeScript and React. I care about accessibility, small bundles ' +
+        'and interfaces that say what they are doing. Looking for a product team in Prague ' +
+        'or fully remote within the EU, ideally somewhere the front end is the product.',
+    });
+
+  /** What Chrome counts against QUOTA_BYTES_PER_ITEM: the key plus its JSON. */
+  const itemBytes = (key: string) => key.length + JSON.stringify(sync.data[key]).length;
+
+  it('uses a small fraction of the 8 KB an item is allowed', async () => {
+    const profile = full();
+    await syncStore.saveProfiles([profile]);
+
+    const bytes = itemBytes(`jobfill.profile.${profile.id}`);
+    expect(bytes).toBeLessThan(syncStore.SYNC_QUOTA_BYTES_PER_ITEM / 4);
+    // Round-trips whole — nothing was silently dropped on the way in or out.
+    expect((await syncStore.getProfiles())[0]).toEqual(profile);
+  });
+
+  it('leaves the 100 KB warning alone at ten of them', async () => {
+    const profiles = Array.from({ length: 10 }, (_, i) =>
+      createEmptyProfile({ ...full(), id: `p${i}`, label: `Profile ${i}` }),
+    );
+    await syncStore.saveProfiles(profiles);
+
+    const usage = await syncStore.getStorageUsage();
+    expect(usage.percent).toBeLessThan(syncStore.SYNC_QUOTA_WARN_PERCENT);
+    expect(usage.warn).toBe(false);
+
+    // The warning itself still fires — it is the profiles that are small.
+    sync.data['bulk'] = 'x'.repeat(90_000);
+    expect((await syncStore.getStorageUsage()).warn).toBe(true);
   });
 });

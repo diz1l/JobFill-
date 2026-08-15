@@ -62,26 +62,46 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
-// ─── Legacy migration ─────────────────────────────────────────────────────────
+// ─── Startup migration ────────────────────────────────────────────────────────
 
 let migrationPromise: Promise<void> | null = null;
 
-async function runLegacyMigration(): Promise<void> {
+/**
+ * Two upgrades, once per JavaScript context, before the first read or write:
+ * the pre-v1.1 single blob, and the schema-version stamp.
+ *
+ * The stamp is all a *split* store needs. Schema v2 only adds profile entries,
+ * and `normalizeProfile` reads an absent entry as `''`, so every key a v1 build
+ * wrote is already a valid v2 item — there is nothing to rewrite, and rewriting
+ * every profile to add empty strings would spend the sync write quota to change
+ * nothing. What would be wrong is leaving `jobfill.schemaVersion` claiming v1
+ * forever: it is the only record of the layout's version in this arrangement,
+ * and the migration that eventually keys off it must not be handed a lie.
+ */
+async function runStartupMigration(): Promise<void> {
   const all = await chrome.storage.sync.get(null);
   const legacy = all[LEGACY_KEY];
-  if (legacy === undefined) return;
 
-  // Lenient: a corrupted legacy blob must not brick the extension.
-  const { data } = normalizeSyncData(legacy);
-  const alreadySplit = all[K.profileIds] !== undefined;
-  if (!alreadySplit) await writeWholeDataset(data);
-  await chrome.storage.sync.remove(LEGACY_KEY);
+  if (legacy !== undefined) {
+    // Lenient: a corrupted legacy blob must not brick the extension.
+    const { data } = normalizeSyncData(legacy);
+    const alreadySplit = all[K.profileIds] !== undefined;
+    // `writeWholeDataset` stamps the current version itself.
+    if (!alreadySplit) await writeWholeDataset(data);
+    await chrome.storage.sync.remove(LEGACY_KEY);
+    return;
+  }
+
+  const stamped = all[K.schemaVersion];
+  if (typeof stamped === 'number' && stamped < SYNC_SCHEMA_VERSION) {
+    await chrome.storage.sync.set({ [K.schemaVersion]: SYNC_SCHEMA_VERSION });
+  }
 }
 
 function ensureMigrated(): Promise<void> {
   const pending =
     migrationPromise ??
-    runLegacyMigration().catch((err) => {
+    runStartupMigration().catch((err) => {
       // Allow a later call to retry instead of caching the failure forever.
       migrationPromise = null;
       throw err;
@@ -345,6 +365,18 @@ export async function saveSettings(settings: Partial<AppSettings>): Promise<void
 export const SYNC_QUOTA_WARN_PERCENT = 80;
 
 const FALLBACK_QUOTA_BYTES = 102_400;
+
+/**
+ * `chrome.storage.sync.QUOTA_BYTES_PER_ITEM` — the ceiling on **one** key's
+ * name plus its JSON value.
+ *
+ * Named here because the key-per-entity layout is what turned it from a limit
+ * on the whole dataset into a limit on a single profile, and the v2 additions
+ * are the first change big enough to be worth measuring against it. A fully
+ * written-out profile is ~1 KB (see `tests/storage.test.ts`), so the headroom
+ * is roughly eightfold and the practical ceiling remains the 100 KB total.
+ */
+export const SYNC_QUOTA_BYTES_PER_ITEM = 8192;
 
 export interface SyncStorageUsage {
   bytes: number;

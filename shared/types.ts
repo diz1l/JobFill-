@@ -1,21 +1,86 @@
 // ─── Domain types ────────────────────────────────────────────────────────────
 
+/**
+ * The answers JobFill types into application forms.
+ *
+ * Every entry is a `string`, including the ones that look like other types: a
+ * date of birth, a postal code and a number of years are all *what the user
+ * typed*, and the re-spellings a form may want (`1990-03-15` → `15.03.1990`,
+ * `5+ years` → `5`) are computed in `shared/filler/atoms.ts` instead of being
+ * stored twice. A field left blank is a legitimate state and always means the
+ * same thing everywhere: nothing is written and the control is reported as
+ * missing data — never guessed.
+ *
+ * The breadth is the point. The first live run against a Workday form asked for
+ * 18 entries and could answer 6; two of the rest were filled *wrongly*, because
+ * the heuristics did not recognise "Legal Middle Name" / "Preferred Name", the
+ * classifier was asked instead, and with no such entry in the profile the only
+ * answers available to it were guesses. An entry that exists — even an empty one
+ * — removes both the gap and the incentive to invent.
+ */
 export interface Profile {
   id: string;
   /** Display label, e.g. "Frontend", "QA" */
   label: string;
+
+  // ── Name ────────────────────────────────────────────────────────────────────
   firstName: string;
+  /** "Legal middle name". Blank for most Europeans, and blank is an answer. */
+  middleName: string;
   lastName: string;
+  /**
+   * The name to be addressed by ("Preferred name", "Goes by").
+   *
+   * Never derived from {@link Profile.firstName}: an empty preferred name is not
+   * evidence that the given name is the preferred one, and writing the given
+   * name here is precisely the guess this field was added to stop.
+   */
+  preferredName: string;
+  /** Jr., Sr., III, Ph.D. — a separate box on most US-authored forms. */
+  nameSuffix: string;
+
+  // ── Contact ─────────────────────────────────────────────────────────────────
   email: string;
   /** E.164 format, default region +420 */
   phone: string;
-  city: string;
   linkedin: string;
   github: string;
   website: string;
+
+  // ── Address ─────────────────────────────────────────────────────────────────
+  addressLine1: string;
+  /** Flat, floor, c/o — the second line ATS forms offer and rarely require. */
+  addressLine2: string;
+  city: string;
+  /** "State / Province / County" — one box wherever a form asks at all. */
+  state: string;
+  postalCode: string;
+  /** Full name or ISO-3166 alpha-2; `countryName` / `countryCode` re-spell it. */
+  country: string;
+
+  // ── Background ──────────────────────────────────────────────────────────────
+  nationality: string;
+  /**
+   * ISO `yyyy-mm-dd`, which is what `<input type="date">` in settings stores.
+   * The derived atoms re-spell it (`15.03.1990`, and separate day/month/year for
+   * forms with three boxes); an unparsable value derives nothing at all.
+   */
+  dateOfBirth: string;
+  workPermit: string;
+  /** Highest level attained, from the ladder the settings page offers. */
+  education: string;
+  /** "ŘP skupiny B" — asked on a large share of Czech postings. */
+  drivingLicence: string;
+  /** Language to be contacted in, e.g. "English". */
+  preferredLanguage: string;
+
+  // ── Work ────────────────────────────────────────────────────────────────────
+  currentTitle: string;
+  currentEmployer: string;
+  /** As written ("5", "5+", "3–5 years"); `experienceYears` digits it. */
+  yearsOfExperience: string;
   salaryExpectation: string;
   availability: string;
-  workPermit: string;
   about: string;
 }
 
@@ -49,8 +114,16 @@ export interface ApplicationEntry {
 
 // ─── Storage shapes ───────────────────────────────────────────────────────────
 
-/** Version of the `chrome.storage.sync` layout written by this build. */
-export const SYNC_SCHEMA_VERSION = 1;
+/**
+ * Version of the `chrome.storage.sync` layout written by this build.
+ *
+ * - **v1** — the original shape.
+ * - **v2** — 16 further {@link Profile} entries (middle/preferred name and
+ *   suffix, postal address, background, current role). Purely additive: every
+ *   new entry is a string that a v1 profile was never asked for, so migrating is
+ *   filling them in as empty. See `MIGRATIONS` in `shared/storage/validate.ts`.
+ */
+export const SYNC_SCHEMA_VERSION = 2;
 
 /** chrome.storage.sync — cross-device, ≤ 100 KB */
 export interface SyncData {
@@ -191,17 +264,38 @@ export function createEmptyProfile(overrides: Partial<Profile> = {}): Profile {
   return {
     id: crypto.randomUUID(),
     label: 'My Profile',
+
     firstName: '',
+    middleName: '',
     lastName: '',
+    preferredName: '',
+    nameSuffix: '',
+
     email: '',
     phone: '',
-    city: '',
     linkedin: '',
     github: '',
     website: '',
+
+    addressLine1: '',
+    addressLine2: '',
+    city: '',
+    state: '',
+    postalCode: '',
+    country: '',
+
+    nationality: '',
+    dateOfBirth: '',
+    workPermit: '',
+    education: '',
+    drivingLicence: '',
+    preferredLanguage: '',
+
+    currentTitle: '',
+    currentEmployer: '',
+    yearsOfExperience: '',
     salaryExpectation: '',
     availability: '',
-    workPermit: '',
     about: '',
     ...overrides,
   };

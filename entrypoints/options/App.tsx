@@ -401,6 +401,49 @@ function ProfilesTab() {
   );
 }
 
+/**
+ * One titled group of the profile form.
+ *
+ * A real `<fieldset>` / `<legend>`: the tab holds thirty boxes now, and a
+ * screen reader announcing "Address, group" before "City" is the difference
+ * between five short forms and one undifferentiated list. The legend is drawn
+ * as a full-width rule rather than as the notch a bordered fieldset puts it in,
+ * so it reads as the heading it is.
+ */
+function FieldSet({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <fieldset>
+      <legend className="mb-4 w-full border-b border-line pb-2 text-base font-semibold text-fg">
+        {title}
+      </legend>
+      <div className="flex flex-col gap-5">{children}</div>
+    </fieldset>
+  );
+}
+
+/**
+ * Highest education, as a closed list.
+ *
+ * Country and language are free text a few fields below, and the difference is
+ * deliberate. A country or a language is one of hundreds of values that no
+ * shipped dropdown can hold honestly, and the profile can afford to keep them as
+ * written because `atoms.ts` re-spells a country either way round (`Czechia` ↔
+ * `CZ`). An education level is the opposite: a short ladder every ATS agrees on,
+ * and the *stored words themselves* are what a form's own dropdown gets matched
+ * against — so "MSc" typed by hand would quietly stop matching "Master's
+ * degree", while picking from this list cannot.
+ *
+ * The value is the label: what the user chose is what an employer receives.
+ */
+const EDUCATION_LEVELS = [
+  { value: '', label: 'Not specified' },
+  { value: 'High school', label: 'High school' },
+  { value: 'Vocational training', label: 'Vocational training' },
+  { value: "Bachelor's degree", label: "Bachelor's degree" },
+  { value: "Master's degree", label: "Master's degree" },
+  { value: 'Doctorate', label: 'Doctorate' },
+];
+
 function ProfileForm({
   profile: initial, onSave, onDelete, saved,
 }: {
@@ -413,35 +456,175 @@ function ProfileForm({
   const f = (field: keyof Profile) => (value: string) => setForm((x) => ({ ...x, [field]: value }));
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); void onSave(form); }} className="flex flex-col gap-6">
+    <form onSubmit={(e) => { e.preventDefault(); void onSave(form); }} className="flex flex-col gap-8">
       {/* .field-grid caps every control at one `minmax(280px, 1fr)`
           column, so nothing stretches to the full window width any more. */}
       <div className="field-grid">
         <Field label="Profile label" value={form.label} onChange={f('label')} required />
       </div>
 
-      <div className="field-grid">
-        <Field label="First name" value={form.firstName} onChange={f('firstName')} autoComplete="given-name" />
-        <Field label="Last name" value={form.lastName} onChange={f('lastName')} autoComplete="family-name" />
-        <Field label="Email" type="email" value={form.email} onChange={f('email')} autoComplete="email" />
-        <Field label="Phone" type="tel" value={form.phone} onChange={f('phone')} placeholder="+420 777 000 000" autoComplete="tel" />
-        <Field label="City" value={form.city} onChange={f('city')} autoComplete="address-level2" />
-        <Field label="Salary expectation" value={form.salaryExpectation} onChange={f('salaryExpectation')} placeholder="e.g. 80 000 CZK / month" />
-        <Field label="LinkedIn URL" value={form.linkedin} onChange={f('linkedin')} placeholder="https://linkedin.com/in/…" />
-        <Field label="GitHub URL" value={form.github} onChange={f('github')} placeholder="https://github.com/…" />
-        <Field label="Portfolio / Website" value={form.website} onChange={f('website')} placeholder="https://…" />
-        <Field label="Availability / Notice" value={form.availability} onChange={f('availability')} placeholder="e.g. 2 weeks" />
-        <Field label="Work permit / Citizenship" value={form.workPermit} onChange={f('workPermit')} placeholder="e.g. EU citizen" />
-      </div>
+      <FieldSet title="Name">
+        <div className="field-grid">
+          <Field label="First name" value={form.firstName} onChange={f('firstName')} autoComplete="given-name" />
+          <Field
+            label="Middle name"
+            value={form.middleName}
+            onChange={f('middleName')}
+            autoComplete="additional-name"
+            hint="Asked for as “Legal middle name”. Leave it empty if you have none — empty is an answer."
+          />
+          <Field label="Last name" value={form.lastName} onChange={f('lastName')} autoComplete="family-name" />
+          <Field
+            label="Preferred name"
+            value={form.preferredName}
+            onChange={f('preferredName')}
+            autoComplete="nickname"
+            hint="The name you go by, where it differs from your first name. Never guessed from it."
+          />
+          <Field
+            label="Suffix"
+            value={form.nameSuffix}
+            onChange={f('nameSuffix')}
+            placeholder="Jr., Ph.D."
+            autoComplete="honorific-suffix"
+          />
+        </div>
+      </FieldSet>
 
-      <TextArea
-        label="About / Summary"
-        value={form.about}
-        onChange={f('about')}
-        rows={5}
-        placeholder="Used by AI to write motivation letters and answer open-ended application questions."
-        hint="Two or three sentences work best — role, key skills, what you are looking for."
-      />
+      <FieldSet title="Contact">
+        <div className="field-grid">
+          <Field label="Email" type="email" value={form.email} onChange={f('email')} autoComplete="email" />
+          <Field label="Phone" type="tel" value={form.phone} onChange={f('phone')} placeholder="+420 777 000 000" autoComplete="tel" />
+          <Field label="LinkedIn URL" value={form.linkedin} onChange={f('linkedin')} placeholder="https://linkedin.com/in/…" />
+          <Field label="GitHub URL" value={form.github} onChange={f('github')} placeholder="https://github.com/…" />
+          <Field label="Portfolio / Website" value={form.website} onChange={f('website')} placeholder="https://…" />
+        </div>
+      </FieldSet>
+
+      <FieldSet title="Address">
+        <div className="field-grid">
+          <Field
+            label="Address line 1"
+            value={form.addressLine1}
+            onChange={f('addressLine1')}
+            placeholder="Street and number"
+            autoComplete="address-line1"
+          />
+          <Field
+            label="Address line 2"
+            value={form.addressLine2}
+            onChange={f('addressLine2')}
+            placeholder="Flat, floor, c/o"
+            autoComplete="address-line2"
+          />
+          <Field label="City" value={form.city} onChange={f('city')} autoComplete="address-level2" />
+          <Field
+            label="State / Province / County"
+            value={form.state}
+            onChange={f('state')}
+            autoComplete="address-level1"
+          />
+          <Field
+            label="Postal code"
+            value={form.postalCode}
+            onChange={f('postalCode')}
+            placeholder="100 00"
+            autoComplete="postal-code"
+          />
+          <Field
+            label="Country"
+            value={form.country}
+            onChange={f('country')}
+            placeholder="Czechia"
+            autoComplete="country-name"
+            hint="Full name or ISO code — JobFill fills whichever one the form asks for."
+          />
+        </div>
+      </FieldSet>
+
+      <FieldSet title="Background">
+        <div className="field-grid">
+          <Field
+            label="Nationality"
+            value={form.nationality}
+            onChange={f('nationality')}
+            placeholder="e.g. Czech"
+          />
+          {/* A date input, so what is stored is always yyyy-mm-dd: one
+              unambiguous spelling that JobFill can re-write per form, rather
+              than a free-text box in which 03/04 means two different days. */}
+          <Field
+            label="Date of birth"
+            type="date"
+            value={form.dateOfBirth}
+            onChange={f('dateOfBirth')}
+            autoComplete="bday"
+            hint="Filled only where a form asks. Re-spelled per form — 15.03.1990, or three separate boxes."
+          />
+          <Field
+            label="Work permit / Citizenship"
+            value={form.workPermit}
+            onChange={f('workPermit')}
+            placeholder="e.g. EU citizen"
+          />
+          <Select
+            label="Highest education"
+            value={form.education}
+            onChange={f('education')}
+            options={EDUCATION_LEVELS}
+            hint="These words are what a form's own list gets matched against — pick the nearest."
+          />
+          <Field
+            label="Driving licence"
+            value={form.drivingLicence}
+            onChange={f('drivingLicence')}
+            placeholder="e.g. B"
+            hint="Czech postings ask constantly — “ŘP skupiny B”."
+          />
+          <Field
+            label="Preferred language"
+            value={form.preferredLanguage}
+            onChange={f('preferredLanguage')}
+            placeholder="e.g. English"
+            hint="The language you would like an employer to contact you in."
+          />
+        </div>
+      </FieldSet>
+
+      <FieldSet title="Work">
+        <div className="field-grid">
+          <Field
+            label="Current job title"
+            value={form.currentTitle}
+            onChange={f('currentTitle')}
+            placeholder="e.g. Frontend Engineer"
+            autoComplete="organization-title"
+          />
+          <Field
+            label="Current employer"
+            value={form.currentEmployer}
+            onChange={f('currentEmployer')}
+            placeholder="e.g. Acme s.r.o."
+            autoComplete="organization"
+          />
+          <Field
+            label="Years of experience"
+            value={form.yearsOfExperience}
+            onChange={f('yearsOfExperience')}
+            placeholder="e.g. 5"
+          />
+          <Field label="Salary expectation" value={form.salaryExpectation} onChange={f('salaryExpectation')} placeholder="e.g. 80 000 CZK / month" />
+          <Field label="Availability / Notice" value={form.availability} onChange={f('availability')} placeholder="e.g. 2 weeks" />
+        </div>
+        <TextArea
+          label="About / Summary"
+          value={form.about}
+          onChange={f('about')}
+          rows={5}
+          placeholder="Used by AI to write motivation letters and answer open-ended application questions."
+          hint="Two or three sentences work best — role, key skills, what you are looking for."
+        />
+      </FieldSet>
 
       <div className="flex items-center justify-between gap-4 border-t border-line pt-4">
         {onDelete ? (

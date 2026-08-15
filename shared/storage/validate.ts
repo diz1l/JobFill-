@@ -40,12 +40,62 @@ type RawObject = Record<string, unknown>;
 type Migration = (data: RawObject) => RawObject;
 
 /**
- * Keyed by the version being migrated *from*. To introduce schema v2:
+ * Keyed by the version being migrated *from*. To introduce schema v3:
  *   1. bump `SYNC_SCHEMA_VERSION` in `shared/types.ts` and update `SyncData`;
- *   2. add `1: (d) => ({ ...d, schemaVersion: 2, /* new fields *\/ })` below.
+ *   2. add `2: (d) => ({ ...d, schemaVersion: 3, /* … *\/ })` below.
  * Everything else — storage reads, import, the legacy-blob path — picks it up.
  */
-const MIGRATIONS: Record<number, Migration> = {};
+const MIGRATIONS: Record<number, Migration> = {
+  /**
+   * v1 → v2 — the 16 profile entries added for the Workday-shaped forms
+   * (middle/preferred name and suffix, postal address, background, current
+   * role). See {@link SYNC_SCHEMA_VERSION}.
+   *
+   * Additive, and therefore lossless in the only direction that matters: a v1
+   * profile is a v2 profile that was never asked the new questions, so the
+   * migration is exactly "the new entries are blank" — no value is moved,
+   * renamed, re-parsed or dropped, and a v1 export imports into this build with
+   * every answer it carried still in place.
+   *
+   * `normalizeProfile` would default the missing entries to `''` regardless of
+   * whether this ran, which is what keeps a half-synced store readable. Stating
+   * it here anyway is the difference between "the shape happens to survive" and
+   * "the upgrade is written down": the profiles come back out of this function
+   * with the v2 key set complete, so what a v3 migration receives is a v2
+   * object rather than whatever v1 happened to hold.
+   */
+  1: (data) => ({
+    ...data,
+    schemaVersion: 2,
+    profiles: Array.isArray(data.profiles)
+      ? data.profiles.map((entry) => (isObject(entry) ? { ...V2_PROFILE_FIELDS, ...entry } : entry))
+      : data.profiles,
+  }),
+};
+
+/**
+ * The v2 additions, as the empty strings a v1 profile implies for them.
+ * Spread *before* the stored profile, so an entry that somehow already carries
+ * one of these keys keeps its own value.
+ */
+const V2_PROFILE_FIELDS: Readonly<Record<string, string>> = {
+  middleName: '',
+  preferredName: '',
+  nameSuffix: '',
+  addressLine1: '',
+  addressLine2: '',
+  state: '',
+  postalCode: '',
+  country: '',
+  nationality: '',
+  dateOfBirth: '',
+  education: '',
+  drivingLicence: '',
+  preferredLanguage: '',
+  currentTitle: '',
+  currentEmployer: '',
+  yearsOfExperience: '',
+};
 
 function migrate(raw: RawObject, issues: ValidationIssue[]): RawObject {
   let data = raw;
@@ -71,6 +121,10 @@ function migrate(raw: RawObject, issues: ValidationIssue[]): RawObject {
 
   while (version < SYNC_SCHEMA_VERSION) {
     const step = MIGRATIONS[version];
+    // Guards a forgotten `MIGRATIONS` entry, not user input: the check above
+    // admits only 1 ≤ version ≤ SYNC_SCHEMA_VERSION, and every version below the
+    // current one has a step — so this is unreachable while the table is
+    // complete, and is the message the day it is not.
     if (!step) {
       issues.push({
         path: 'schemaVersion',
@@ -136,20 +190,46 @@ function readArray(source: RawObject, key: string, issues: ValidationIssue[]): u
 
 // ─── Entities ─────────────────────────────────────────────────────────────────
 
-/** Whitelist — unknown keys are dropped so junk never eats the sync quota. */
+/**
+ * Whitelist — unknown keys are dropped so junk never eats the sync quota.
+ *
+ * Order is the order of {@link Profile}, which is also the order the keys are
+ * written in: it is what an exported file and a stored item read like.
+ */
 const PROFILE_FIELDS = [
   'label',
+
   'firstName',
+  'middleName',
   'lastName',
+  'preferredName',
+  'nameSuffix',
+
   'email',
   'phone',
-  'city',
   'linkedin',
   'github',
   'website',
+
+  'addressLine1',
+  'addressLine2',
+  'city',
+  'state',
+  'postalCode',
+  'country',
+
+  'nationality',
+  'dateOfBirth',
+  'workPermit',
+  'education',
+  'drivingLicence',
+  'preferredLanguage',
+
+  'currentTitle',
+  'currentEmployer',
+  'yearsOfExperience',
   'salaryExpectation',
   'availability',
-  'workPermit',
   'about',
 ] as const;
 
